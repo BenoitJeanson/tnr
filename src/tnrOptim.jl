@@ -16,8 +16,9 @@ function init_model(g::MetaGraph,
     # set_silent(model)
     set_optimizer_attribute(model, "DualReductions", 0)
     set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
+    model.ext[:r] = TNR(g, contingencies, is_single_ρ, ρ_min_bound, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only)
 
-    model, TNR(g, contingencies, is_single_ρ, ρ_min_bound, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only)
+    model, model.ext[:r]
 end
 
 function create_variables!(model::Model, r::TNR)
@@ -53,7 +54,7 @@ function create_variables!(model::Model, r::TNR)
     @variable(model, c_w[cases(r), edge_ids(r)], Bin)
 
     if r.is_single_ρ
-        @variable(model, ρ ≥ r.ρ_min_bound)
+        @variable(model, ρ ≥ 0)
     else
         @variable(model, ρ[edge_ids(r)] ≥ 0)
     end
@@ -66,6 +67,8 @@ function create_variables!(model::Model, r::TNR)
     @variable(model, cn1_p_orig[n_1cases(r)])
     @variable(model, cn1_π[n_1cases(r), buses(r)], Bin)# lower_bound = 0, upper_bound = 1)
     @variable(model, cn1_ψ[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)# lower_bound = 0, upper_bound = 1)
+
+    @variable(model, lostload[n_1cases(r)])
 end
 
 function OTS_flows!(model, r::TNR)
@@ -181,7 +184,7 @@ end
 
 function c_w!(model, r::TNR)
     c_w = model[:c_w]
-    if r.allow_branch_openings
+    if r.allow_branch_openings || r.OTS_only
         v_branch = model[:v_branch]
         @constraint(model, [c in cases(r), e in edge_ids(r)], c_w[c, e] ≥ is_outage(r, c, e))
         @constraint(model, [c in cases(r), e in edge_ids(r)], c_w[c, e] ≥ v_branch[e])
@@ -253,35 +256,36 @@ function OTS_N_1_connectednes!(model, r::TNR, bus_origin)
     cn1_ψ = model[:cn1_ψ]
 
 
-    @variable(model, πbus[n_1cases(r), buses(r)], Bin)# lower_bound = 0, upper_bound = 1)
     @constraint(model, [n_1cases(r)], cn1_a[:] .+ cn1_b[:] .== 1)
 
     @constraint(model, [c in n_1cases(r), e in edge_ids(r)],  cn1_flows[c, e] ≤ bigM_nb_v * (1 - c_w[c, e]))
     @constraint(model, [c in n_1cases(r), e in edge_ids(r)], -cn1_flows[c, e] ≤ bigM_nb_v * (1 - c_w[c, e]))
 
     @constraint(model, [c in n_1cases(r), bus in [bus for bus in buses(r) if bus ≠ bus_origin]],
-        πbus[c, bus]  - sum(r.A[e, bus] * cn1_flows[c, e] for e in edge_ids(r)) == 0)
-    # @constraint(model, [c in n_1cases(r)],
-    #     cn1_p_orig[c] - sum(r.A[e,   bus_origin] * cn1_flows[c, e] for e in edge_ids(r)) == 0)
+        cn1_π[c, bus]  - sum(r.A[e, bus] * cn1_flows[c, e] for e in edge_ids(r)) == 0)
+    @constraint(model, [c in n_1cases(r)],
+        cn1_p_orig[c] - sum(r.A[e,   bus_origin] * cn1_flows[c, e] for e in edge_ids(r)) == 0)
 
-    # @constraint(model, [c in n_1cases(r)],   cn1_p_orig[c] + r.nb_buses - 1  ≤ bigM_nb_v * cn1_a[c])
-    # @constraint(model, [c in n_1cases(r)], -(cn1_p_orig[c] + r.nb_buses - 1) ≤ bigM_nb_v * cn1_a[c])
+    @constraint(model, [c in n_1cases(r)],   cn1_p_orig[c] + nb_buses(r) - 1  ≤ bigM_nb_v * cn1_a[c])
+    @constraint(model, [c in n_1cases(r)], -(cn1_p_orig[c] + nb_buses(r) - 1) ≤ bigM_nb_v * cn1_a[c])
     
-    @constraint(model, [c in n_1cases(r)], πbus[c, bus_origin] == 1)
-    # @constraint(model, [c in n_1cases(r)],
-    #       sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1  ≤ bigM_π * cn1_b[c])
-    # @constraint(model, [c in n_1cases(r)],
-    #     -(sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1) ≤ bigM_π * cn1_b[c])
+    @constraint(model, [c in n_1cases(r)], cn1_π[c, bus_origin] == 1)
 
-    @constraint(model,[c in n_1cases(r), bus in buses(r)],
-        πbus[c, bus] ≤ sum(cn1_ψ[c, bus, e] for e in incident(r, bus)))
-    @constraint(model,[c in n_1cases(r), bus in buses(r), e in incident(r, bus)],
-        πbus[c, bus] ≥ cn1_ψ[c, bus, e])
+    @constraint(model, [c in n_1cases(r)],
+          sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1  ≤ bigM_π * cn1_b[c])
+    @constraint(model, [c in n_1cases(r)],
+        -(sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1) ≤ bigM_π * cn1_b[c])
+
+    @constraint(model,[c in n_1cases(r), bus in buses(r); bus ≠ bus_origin],
+        cn1_π[c, bus] ≤ sum(cn1_ψ[c, bus, e] for e in incident(r, bus)))
     
     @constraint(model,[c in n_1cases(r), bus in buses(r), e in incident(r, bus)],
-        cn1_ψ[c, bus, e] ≥ πbus[c, opposite(r, e, bus)] - c_w[c, e])
+        cn1_π[c, bus] ≥ cn1_ψ[c, bus, e])
+    
     @constraint(model,[c in n_1cases(r), bus in buses(r), e in incident(r, bus)],
-        cn1_ψ[c, bus, e] ≤ πbus[c, opposite(r, e, bus)])
+        cn1_ψ[c, bus, e] ≥ cn1_π[c, opposite(r, e, bus)] - c_w[c, e])
+    @constraint(model,[c in n_1cases(r), bus in buses(r), e in incident(r, bus)],
+        cn1_ψ[c, bus, e] ≤ cn1_π[c, opposite(r, e, bus)])
     @constraint(model,[c in n_1cases(r), bus in buses(r), e in incident(r, bus)],
         cn1_ψ[c, bus, e] ≤ 1 - c_w[c, e])
 end
@@ -422,23 +426,23 @@ function OTS_balance!(model, r::TNR)
     @variable(model, scaledgen[n_1cases(r), buses(r)] ≥ 0)
     @variable(model, σ[n_1cases(r)]  ≥ 0)
 
-    if haskey(model,:πbus)
-        πbus = model[:πbus]
+    if haskey(model,:cn1_π)
+        cn1_π = model[:cn1_π]
         for c in n_1cases(r), bus in buses(r)
             if r.p[bus] < 0
                 @constraint(model, load[c, bus] == 0)
                 @constraint(model, scaledgen[c, bus] == - σ[c] * r.p[bus])
-                @constraint(model,    gen[c, bus] - scaledgen[c, bus]  ≤ bigM * (1 - πbus[c, bus]))
-                @constraint(model, - (gen[c, bus] - scaledgen[c, bus]) ≤ bigM * (1 - πbus[c, bus]))
-                @constraint(model,  gen[c, bus] ≤ bigM * πbus[c, bus])
-                @constraint(model, -gen[c, bus] ≤ bigM * πbus[c, bus])
+                @constraint(model,    gen[c, bus] - scaledgen[c, bus]  ≤ bigM * (1 - cn1_π[c, bus]))
+                @constraint(model, - (gen[c, bus] - scaledgen[c, bus]) ≤ bigM * (1 - cn1_π[c, bus]))
+                @constraint(model,  gen[c, bus] ≤ bigM * cn1_π[c, bus])
+                @constraint(model, -gen[c, bus] ≤ bigM * cn1_π[c, bus])
             else
                 @constraint(model, gen[c, bus] == 0)
                 @constraint(model, scaledgen[c, bus] == 0)
-                @constraint(model,   load[c, bus] - r.p[bus]  ≤ bigM * (1 - πbus[c, bus]))
-                @constraint(model, -(load[c, bus] - r.p[bus]) ≤ bigM * (1 - πbus[c, bus]))
-                @constraint(model,  load[c, bus] ≤ bigM * πbus[c, bus])
-                @constraint(model, -load[c, bus] ≤ bigM * πbus[c, bus])
+                @constraint(model,   load[c, bus] - r.p[bus]  ≤ bigM * (1 - cn1_π[c, bus]))
+                @constraint(model, -(load[c, bus] - r.p[bus]) ≤ bigM * (1 - cn1_π[c, bus]))
+                @constraint(model,  load[c, bus] ≤ bigM * cn1_π[c, bus])
+                @constraint(model, -load[c, bus] ≤ bigM * cn1_π[c, bus])
             end
         end
     end
@@ -544,11 +548,18 @@ function TNR_balance!(model, r::TNR)
     end
 end
 
+function loadloss(model, r::TNR)
+    lostload = model[:lostload]
+    load = model[:load]
+
+    @constraint(model, [c in n_1cases(r)], lostload[c] == sum(r.p[bus] - load[c, bus] for bus in buses(r) if r.p[bus] ≥ 0))
+end
+
 function secured_dc_OTS(g::MetaGraph;
     contingencies::AbstractArray{Int} = Int[],
     is_single_ρ::Bool=true,
     ρ_min_bound::Float64 = 0.,
-    n_1_connectedness::Bool = true,
+    n_1_connectedness::Bool = false,
     bus_confs::Vector{BusConf} = BusConf[],
     allow_branch_openings::Bool = true,
     OTS_only::Bool = false)
@@ -560,24 +571,30 @@ function secured_dc_OTS(g::MetaGraph;
     N_balance!(model, r)
 
     if r.OTS_only
-    OTS_flows!(model, r)
-    OTS_N_connectedness!(model, r)
-    OTS_N_1_connectednes!(model, r, 1)
-    OTS_balance!(model, r)
+        OTS_flows!(model, r)
+        OTS_N_connectedness!(model, r)
+        OTS_N_1_connectednes!(model, r, 12)# TODO: improve bus_orig choice !
+        OTS_balance!(model, r)
     else
-    TNR_flows!(model, r)
-    TNR_N_connectedness!(model, r)
-    TNR_N_1_connectednes!(model, r, 1)
-    TNR_balance!(model, r)
-    @constraint(model, [bus in keys(r.bus_to_conf_ids)], sum(model[:v_bus][bc] for bc in r.bus_to_conf_ids[bus]) ≤ 1)
+        TNR_flows!(model, r)
+        TNR_N_connectedness!(model, r)
+        TNR_N_1_connectednes!(model, r, 1)
+        TNR_balance!(model, r)
+
+        @constraint(model, [bus in keys(r.bus_to_conf_ids)], sum(model[:v_bus][bc] for bc in r.bus_to_conf_ids[bus]) ≤ 1)
     end
+
+    loadloss(model,r)
 
     overload!(model, r)
     overload = model[:overload]
-    # @constraint(model, overload ≤ 0)
+    @constraint(model, overload ≤ 0)
+    
+    lostload = model[:lostload]
     @objective(model, Min,
-    overload)
-    # + 0.1  * (allow_branch_openings ? sum(model[:v_branch]) : 0)) 
+        sum(lostload[c] for c in n_1cases(r))
+    # overload)
+    + 0.01  * (allow_branch_openings ? sum(model[:v_branch]) : 0)) 
     # + 0.01 * (!isempty(bus_confs)   ? sum(model[:v_bus])    : 0) )
     model, r
 end

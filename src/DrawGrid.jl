@@ -54,6 +54,8 @@ function complete_subBus_coords(g, init_points)
 end
 
 function draw(g_orig::MetaGraph;
+                fig::Union{Figure, GridPosition, GridSubposition, Nothing} = nothing,
+                figposition = Tuple{Int, Int},
 
                 outages = [],
                 trip = nothing,
@@ -64,15 +66,16 @@ function draw(g_orig::MetaGraph;
                 margin_ratio =7,
                 digits = 2,
     
-                node_label = (g, label; digits = 2) -> "$label($(round(g[label], digits=digits)))",
+                node_labels = (g, label; digits = 2) -> "$label($(round(g[label], digits=digits)))",
                 marker = (g, label) -> g[label]>=0 ? :rect : :circle,
                 node_size = (g, label, max_p) -> sqrt(abs(g[label]))/sqrt(max_p)*80,
 
                 edge_labels = (br; digits = 2) -> repr(round(br.p, digits=digits)),
-                edge_coloring = (br; tol=1e-6) -> br.outage ? :black : (abs(br.p>br.p_max + tol) ? :red : :green),
+                edge_coloring = (br; tol=1e-6) -> br.outage || br.trip ? :black : (abs(br.p>br.p_max + tol) ? :red : :green3),
                 edge_style = branch -> branch.trip ? :dot : :solid,
-                edge_width = 3,
+                edge_width = br -> br.outage || br.trip ? 4 : 2,
                 arrow_size = 25,
+                title = ""
                 )
 
     g = copy(g_orig)
@@ -98,8 +101,12 @@ function draw(g_orig::MetaGraph;
         g[label_for(g,dst(e)), label_for(g,src(e))] = b
     end
 
-    fig = Figure(size = fig_size, fontsize = font_size)
-    ax = Axis(fig[1, 1])
+    if isnothing(fig)
+        fig = Figure(size = fig_size, fontsize = font_size)
+        ax = Axis(fig[1, 1], title = title)
+    else
+        ax = Axis(fig, title = title)
+    end
 
     x_min, x_max, y_min, y_max = reduce(((x_min, x_max, y_min, y_max), pt) 
         -> (min(pt[1], x_min), max(pt[1], x_max), min(pt[2], y_min), max(pt[2], y_max)), 
@@ -113,14 +120,14 @@ function draw(g_orig::MetaGraph;
 
     graphplot!(ax, g;
         layout = layout isa Dict{String, Point2} ? complete_subBus_coords(g, layout) : layout,
-        node_size = [node_size(g, l, max_p) for l in gLabels],
+        node_size = isnothing(node_size) ? 0 : [node_size(g, l, max_p) for l in gLabels],
         node_attr = (marker = [marker(g, l) for l in g_labels], color= :white, strokecolor = :red, strokewidth = 3,),
-        nlabels = [node_label(g, l, digits=digits) for l in g_labels],
-        elabels = [edge_labels(b, digits=digits) for b in branches],
+        nlabels = isnothing(node_labels) ? nothing : [node_labels(g, l, digits=digits) for l in g_labels],
+        elabels = isnothing(edge_labels) ? nothing : [edge_labels(b, digits=digits) for b in branches],
         edge_plottype = :beziersegments,
 		edge_attr = (linestyle = [edge_style(b) for b in branches],),
         edge_color = [edge_coloring(b) for b in branches],
-        edge_width = edge_width,
+        edge_width = [edge_width(b) for b in branches],
         arrow_size = arrow_size,
         arrow_shift = :end,
         )
@@ -128,7 +135,6 @@ function draw(g_orig::MetaGraph;
     hidespines!(ax)
 
     ax.aspect = DataAspect()
-    display(fig)
     fig
 end
 

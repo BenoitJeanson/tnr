@@ -117,13 +117,17 @@ function add_subBus(g::MetaGraph, busconfs::Vector{BusConf}, edge_ids::Vector{In
     h, uei[1], uei[2]
 end
 
-function build_simple_grid(;micro = true)
-    g = MetaGraph(
+function _initgraph()
+    MetaGraph(
         DiGraph();
         label_type=String,
         vertex_data_type = Float64,
         edge_data_type = Branch,
     )
+end
+
+function build_simple_grid(;micro = true)
+    g = _initgraph()
     g["1"] = micro ? -2 : -3
     for i=2:(micro ? 3 : 4)
         g["$i"] = 1
@@ -141,12 +145,7 @@ function build_simple_grid(;micro = true)
 end
 
 function network2graph(sys::System, v=false)
-    g = MetaGraph(
-        DiGraph();
-        label_type=String,
-        vertex_data_type = Float64,
-        edge_data_type = Branch,
-    )
+    g = _initgraph()
 
     init_p_bus(g, sys, objType, op) = 
         for k in get_components(objType, sys)
@@ -183,12 +182,32 @@ function network2graph(sys::System, v=false)
     g
 end
 
-function balance!(g)
+@enum BalanceType all_non_zero_uniform gen_proportional
+
+function balance!(g, btype::BalanceType = gen_proportional)
     non_zeros = [label for label in labels(g) if g[label] ≠ 0]
-    imbalance = sum(g[label] for label in non_zeros) / length(non_zeros)
-    for label in non_zeros
-        g[label] -= imbalance
-    end
+    imbalance = sum(g[label] for label in non_zeros)
+    
+    if btype == all_non_zero_uniform
+        uniform = imbalance/ length(non_zeros)
+        for label in non_zeros
+            g[label] -= uniform
+        end
+
+    elseif btype == gen_proportional
+        generators = [label for label in labels(g) if g[label] ≤ 0]
+        if isempty(generators)
+            println("no generator to balance")
+        else
+            total_gen = sum(g[label] for label in generators)
+            for label in generators
+                g[label] -= imbalance * g[label] / total_gen
+            end
+        end
+
+    else
+        println("BALANCE TYPE TO BE IMPLEMENTED")
+    end #TODO oter types
 end
 
 function check_flow_consistency(g; v::Bool=false)
@@ -233,4 +252,40 @@ set_limitations(branches, lim) = Dict( k => begin
         br_out = Branch(br_in, br_in.v_nom1 == 138.0 ? lim : 10)
     end for (k,br_in) in branches)
 
-# end
+
+function connected(g::MetaGraph, bus_origin::String; outages = Int[], trip = nothing)
+
+    """
+    extractsubgraph is embedded as it only applies if the bus_labels are the labels of buses belonging to a single connected component 
+    """
+    function _extractsubgraph(g::MetaGraph, bus_labels::Vector{String})
+        g_sub = _initgraph()
+        for bus in bus_labels
+            g_sub[bus] = g[bus]
+        end
+        for e in edges(g)
+            slabel = label_for(g, src(e))
+            if slabel in bus_labels
+                dlabel = label_for(g, dst(e))
+                g_sub[slabel, dlabel] = g[slabel, dlabel]
+            end
+        end
+        g_sub
+    end
+    
+    g_result = copy(g)
+
+    openbranches = copy(outages)
+    if !isnothing(trip)
+        push!(openbranches, trip)
+    end
+
+    for (i,e) in [(i,e) for (i,e) in enumerate(edges(g_result)) if i in openbranches]
+        rem_edge!(g_result, src(e), dst(e))
+    end
+
+    ccs = connected_components(g_result)
+    cc = ccs[findfirst(c -> bus_origin in (label_for(g_result, v) for v in c), ccs)]
+
+    _extractsubgraph(g_result, [label_for(g_result, v) for v in cc])
+end
