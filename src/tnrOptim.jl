@@ -592,9 +592,9 @@ function secured_dc_OTS(g::MetaGraph;
     
     lostload = model[:lostload]
     @objective(model, Min,
-        sum(lostload[c] for c in n_1cases(r))
+        sum(lostload[c] for c in n_1cases(r)))
     # overload)
-    + 0.01  * (allow_branch_openings ? sum(model[:v_branch]) : 0)) 
+    # + 0.01  * (allow_branch_openings ? sum(model[:v_branch]) : 0)) 
     # + 0.01 * (!isempty(bus_confs)   ? sum(model[:v_bus])    : 0) )
     model, r
 end

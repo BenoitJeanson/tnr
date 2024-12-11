@@ -2,28 +2,23 @@ function create_case(case::String)
     sys = System(joinpath("data","exp_raw","case", "$case.m"));
     coord = load_coord(joinpath("data","exp_raw","coord", "$case.csv"))
     g = network2graph(sys)
-    g["14"] = 1
-    balance!(g, all_non_zero_uniform)
 
-    add_constraint(g, b->b.p_max=1.3)
+    add_constraint(g, b->b.p_max=1.1)
     if case =="case14"
+        g["14"] = 1
+        # g["8"] = 0
         g["1","2"].p_max = 2.3
-        g["1","5"].p_max = 2.3
+        # g["1","5"].p_max = 2.3
         # g["5","6"].p_max = 2.3
         # g["4","5"].p_max = 2.3
         # g["5","6"].p_max = .9
         # g["4","7"].p_max = .6
         # g["4","9"].p_max = .6
+        bus_confs = [BusConf(6, [SubBus(-.17 , [7, 9])])]
     end
+    balance!(g, all_non_zero_uniform)
 
-    bus_confs = [BusConf(6, [SubBus(-.17 , [7, 9])])]
     g, bus_confs, coord
-end
-
-function store_result(model, filename)
-    open(filename, "w") do file
-        foreach(k->println(file, "$k, $(value(k))"), all_variables(model))
-    end
 end
 
 function create_mini_case(micro=false)
@@ -39,6 +34,12 @@ function create_mini_case(micro=false)
         BusConf(2, [SubBus(2, [1])])]
     
     g, mini_conf, load_coord(joinpath("data","exp_raw","coord", "mini.csv"))
+end
+
+function store_result(model, filename)
+    open(filename, "w") do file
+        foreach(k->println(file, "$k, $(value(k))"), all_variables(model))
+    end
 end
 
 function identifycriticalbranch(model)
@@ -87,7 +88,7 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
         fig = fig[1,1],
         edge_labels = nothing,
         node_labels = (g, label; digits = 2)->label,
-        title = "Base, bus origign = $bus_orig",
+        title = "Base (bus origin = $bus_orig)",
         layout = layout, kwargs...)
     
     splitlength = trunc(Int, sqrt(length(trips)))
