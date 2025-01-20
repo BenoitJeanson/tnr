@@ -1,20 +1,25 @@
-function create_case(case::String)
-    sys = System(joinpath("data","exp_raw","case", "$case.m"));
-    coord = load_coord(joinpath("data","exp_raw","coord", "$case.csv"))
-    g = network2graph(sys)
+include(srcdir("DrawGrid.jl"))
+include(srcdir("GraphUtils.jl"))
+include(srcdir("dcpf.jl"))
 
-    add_constraint(g, b->b.p_max=1.1)
-    if case =="case14"
-        g["14"] = 1
-        # g["8"] = 0
-        g["1","2"].p_max = 2.3
-        # g["1","5"].p_max = 2.3
-        # g["5","6"].p_max = 2.3
-        # g["4","5"].p_max = 2.3
-        # g["5","6"].p_max = .9
-        # g["4","7"].p_max = .6
-        # g["4","9"].p_max = .6
-        bus_confs = [BusConf(6, [SubBus(-.17 , [7, 9])])]
+function create_case(case::String, buslabels=lab -> "$lab")
+    sys = System(joinpath("data", "exp_raw", "case", "$case.m"))
+    coord = load_coord(joinpath("data", "exp_raw", "coord", "$case.csv"), buslabels)
+    g = network2graph(sys, buslabels)
+
+    add_constraint(g, b -> b.p_max = 1.1)
+    if case == "case14"
+        g[buslabels(14)] = 1
+        g[buslabels(8)] = 0.1
+        g["H"] = 0.5
+        g["A", "B"].p_max = 3
+        g["B", "D"].p_max = 3
+        g["A", "E"].p_max = 3
+        g["D", "E"].p_max = 1.7
+        g["B", "E"].p_max = 0.9
+        g["D", "I"].p_max = 0.33
+
+        bus_confs = [BusConf(6, [SubBus(-0.17, [7, 9])])]
     end
     balance!(g, all_non_zero_uniform)
 
@@ -23,22 +28,22 @@ end
 
 function create_mini_case(micro=false)
     g = build_simple_grid(micro=micro)
-    g["1","4"].p_max = 3
+    g["1", "4"].p_max = 3
     # g["1","4"].p_max = 5
     # g["2"] = 2
     # g["1"] = -4
 
     mini_conf = [
-        BusConf(3, [SubBus(.5, [3])]),
-        BusConf(2, [SubBus(.5, [1, 3])]),
+        BusConf(3, [SubBus(0.5, [3])]),
+        BusConf(2, [SubBus(0.5, [1, 3])]),
         BusConf(2, [SubBus(2, [1])])]
-    
-    g, mini_conf, load_coord(joinpath("data","exp_raw","coord", "mini.csv"))
+
+    g, mini_conf, load_coord(joinpath("data", "exp_raw", "coord", "mini.csv"))
 end
 
 function store_result(model, filename)
     open(filename, "w") do file
-        foreach(k->println(file, "$k, $(value(k))"), all_variables(model))
+        foreach(k -> println(file, "$k, $(value(k))"), all_variables(model))
     end
 end
 
@@ -50,7 +55,7 @@ function identifycriticalbranch(model)
     ol = value(model[:overload]) + model.ext[:r].ρ_min_bound
     for i in eachindex(model[:flows])
         flow = model[:flows][i]
-        if isapprox(value(flow), ol, atol = 1e-8)
+        if isapprox(value(flow), ol, atol=1e-8)
             return i
         end
     end
@@ -71,54 +76,69 @@ function showallvalues(model)
         println("model not solved")
         return
     end
-    foreach(k->println("$k: $(value(k))"), all_variables(model))
+    foreach(k -> println("$k: $(value(k))"), all_variables(model))
 end
 
-function calcanddraw(g; outages=Int[], trip=nothing, kwargs...)
-    dc_draw = dc_flow(g, outages = outages, trip=trip)
-    draw(dc_draw, outages = outages, trip=trip; kwargs...) 
+function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="", kwargs...)
+    bus_orig = isnothing(bus_orig) ? label_for(g, 1) : bus_orig
+    g_cc = connected(g, bus_orig, outages=outages, trip=trip)
+
+    if nv(g) == nv(g_cc)
+        h = g
+        houtages = outages
+        htrip = trip
+    else
+        h = g_cc
+        balance!(h)
+        houtages = Int[]
+        htrip = nothing
+        label = label == "" ? "" : L"\textbf{%$label}(%$(floor(Int, 100*(total_load(g)-total_load(g_cc)))))"
+    end
+
+    dc_draw = dc_flow(h, outages=houtages, trip=htrip, pf_type=pf_linalg)
+    draw(dc_draw, outages=houtages, trip=htrip, title=label,
+        edge_width=br -> br.outage || br.trip ? 6 : 2,
+        ; kwargs...)
 end
 
 function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[]; kwargs...)
-    fig = Figure(size = (1500, 1500), fontsize = 30)
-    calcanddraw(
-        g,
-        outages = outages,
-        trip = trip,
-        fig = fig[1,1],
-        edge_labels = nothing,
-        node_labels = (g, label; digits = 2)->label,
-        title = "Base (bus origin = $bus_orig)",
-        layout = layout, kwargs...)
-    
-    splitlength = trunc(Int, sqrt(length(trips)))
+    fig = Figure(size=(600, 500), fontsize=20)
+    splitlength = 5
     all_edges = collect(edges(g))
-    for (i,trip) in enumerate(trips)
-        g_cc = connected(g, bus_orig, outages=outages, trip=trip)
-        e = all_edges[i]
-        label = "$(label_for(g, src(e)))-$(label_for(g, dst(e)))"
-        if nv(g) == nv(g_cc)
-            h = g
-            houtages = outages
-            htrip = trip
-        else
-            h = g_cc
-            balance!(h)
-            houtages = Int[]
-            htrip = nothing
-            label = "$label *"
+    for (i, trip) in enumerate(trips)
+        e = all_edges[trip]
+        label = "$(label_for(g, src(e)))$(label_for(g, dst(e)))"
+
+        if !(trip in outages)
+            draw(
+                g,
+                outages=outages,
+                trip=trip,
+                fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
+                node_labels=nothing,
+                edge_labels=nothing,
+                arrow_size=0,
+                node_size=nothing,
+                edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
+                edge_coloring=br -> br.trip ? :black : br.outage ? :white : :black,
+                layout=layout)
+
+            calcanddraw(
+                g,
+                bus_orig=bus_orig,
+                outages=outages,
+                trip=trip,
+                fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
+                node_labels=nothing,
+                edge_labels=nothing,
+                arrow_size=0,
+                node_size=nothing,
+                edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
+                edge_coloring=br -> br.trip ? :black : br.outage ? :transparent : (abs(br.p > br.p_max + 1e-6)) ? :red : :green3,
+                layout=layout,
+                label=L"%$label", kwargs...)
+
         end
-        calcanddraw(
-            h,
-            outages = houtages,
-            trip = htrip,
-            fig = fig[2:3,1][(i-1)÷splitlength, (i-1)%splitlength],
-            node_labels = nothing,
-            edge_labels = nothing,
-            arrow_size = 0,
-            node_size = nothing,
-            title = "$i: $label",
-            layout = layout, kwargs...)
     end
     fig
 end

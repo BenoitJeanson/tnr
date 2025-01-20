@@ -17,7 +17,7 @@ function init_model(g::MetaGraph,
     model = Model(Gurobi.Optimizer)
     # set_silent(model)
     set_optimizer_attribute(model, "DualReductions", 0)
-    set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
+    # set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
     model.ext[:r] = TNR(g, contingencies, is_single_ρ, ρ_min_bound, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only, tnr_pf)
 
     model, model.ext[:r]
@@ -216,7 +216,6 @@ end
 function simple_overload!(model, r::TNR)
     flows = model[:flows]
     p_max = [e_index_for(r.g, br).p_max for br in edges(r.g)]
-    @info "p_max: $p_max"
     @constraint(model, [i in cases(r)], flows[i, :] .≤ p_max)
     @constraint(model, [i in cases(r)], -flows[i, :] .≤ p_max)
 end
@@ -294,7 +293,6 @@ function OTS_N_1_connectednes!(model, r::TNR, bus_origin)
     cn1_π = model[:cn1_π]
     cn1_ψ = model[:cn1_ψ]
 
-    @warn "a, and b removed from N-1 connectedness"
     # @constraint(model, [n_1cases(r)], cn1_a[:] .+ cn1_b[:] .== 1)
 
     @constraint(model, [c in n_1cases(r), e in edge_ids(r)], cn1_flows[c, e] ≤ bigM_nb_v * (1 - c_w[c, e]))
@@ -641,7 +639,6 @@ function secured_dc_OTS(g::MetaGraph;
     # @constraint(model, overload ≤ 0)
 
     lostload = model[:lostload]
-    @warn "Cost function with 10 * sum model[:VBranch]"
     @objective(model, Min,
         sum(lostload[c] for c in n_1cases(r)))
     # overload)

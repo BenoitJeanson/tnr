@@ -2,7 +2,7 @@
 
 julia_version = "1.10.0"
 manifest_format = "2.0"
-project_hash = "9d819a54a158e72b2b50e2d552093e49e43f7758"
+project_hash = "daa421f38f648d68e17713403d0ca205de7ea744"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -47,6 +47,11 @@ deps = ["FileIO", "MacroTools", "Mmap", "OrderedCollections", "PrecompileTools",
 git-tree-sha1 = "ce5737c0d4490b0e0040b5dc77fbb6a351ddf188"
 uuid = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 version = "0.5.8"
+
+[[deps.LaTeXStrings]]
+git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
+uuid = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
+version = "1.4.0"
 
 [[deps.LibCURL]]
 deps = ["LibCURL_jll", "MozillaCACerts_jll"]

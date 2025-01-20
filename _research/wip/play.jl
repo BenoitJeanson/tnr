@@ -10,11 +10,13 @@ include(srcdir("dcpf.jl"))
 include(srcdir("tnrOptim.jl"))
 
 include("playUtils.jl")
+labs = collect('A':'Z')
 
-g, bus_confs, coord = create_case("case14");
-
+g, bus_confs, coord = create_case("case14", num -> "$(labs[num])");
+trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8]
 # g, bus_confs, coord = create_mini_case()
 
+@info "Secured DC OTS"
 model, r = secured_dc_OTS(g,
                 contingencies = 1:20,
                 # contingencies = [1, 2, 14, 15],
@@ -22,17 +24,19 @@ model, r = secured_dc_OTS(g,
                 ρ_min_bound = 1.,
                 # bus_confs = bus_confs,
                 allow_branch_openings = true,
-                OTS_only = true
+                OTS_only = true,
+                tnr_pf = tnr_pf_pst
                 )
 
 optimize!(model);
 
-fig = Figure(size = (1500, 800), fontsize = 15)
+
+fig = Figure(size = (1500, 800), fontsize = 30)
 
 trip = nothing #12
 g_base = dc_flow(g, trip = trip)
 layout = isa(coord, Dict{String, Point2}) ? coord : Stress(Ptype=Float32)
-draw(g_base, fig = fig[1,1], trip = trip, layout = layout);
+draw(g_base, fig = fig[1,1], trip = trip, layout = layout, title = "$(r.tnr_pf)");
 
 openings = Int[]
 applied_conf=BusConf[]
@@ -59,7 +63,7 @@ if is_solved_and_feasible(model)
     end
     g_result, openings_result = add_subBus(g, applied_conf, openings)
     dc_flow!(g_result, outages = [openings_result])
-    draw(g_result , fig = fig[1,2], outages = openings_result, layout = layout);
+    draw(g_result , fig = fig[1,2], outages = openings_result, layout = layout, title = "objective value:$(round(objective_value(model); digits = 5 ))");
     println("OK")
 else
     println("NOT FEASIBLE")
@@ -68,11 +72,3 @@ end
 display(fig)
 
 # is_solved_and_feasible(model) && display(["$k: $(value(k))" for k in all_variables(model)])
-
-
-
-# g, bus_confs, coord = create_case("case14");
-# dc_flow!(g)
-# fig = draw(g, layout = coord)
-# save(projectdir("_research","tmp", "img.png"), fig)
-# save(joinpath("_research","tmp", "img.svg"), fig)
