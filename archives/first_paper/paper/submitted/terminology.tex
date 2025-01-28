@@ -1,0 +1,68 @@
+\section*{Nomenclature}
+\label{ss:Formulation}
+
+\noindent
+We consider a graph $\mathcal{G}$.
+Vectors  are indicated in lowercase bold  $\pmb{u}$, and matrices  in uppercase bold $\pmb{A}$. 
+
+\subsection*{Functions and operators}
+
+\noindent
+\begin{tabular}{p{1.5cm}p{6.5cm}}
+    $|.|$              & Cardinality of a set                         \\
+    $\odot$            & Hadamard product: elementwise multiplication \\
+    $\langle .,.\rangle$ & Inner product                               \\
+    $\delta_{c,i}$     & Kronecker function: 1 if $c=i$; 0 otherwise       \\
+    $.\vee.$           & Logical OR                                   \\
+    $.\wedge.$         & Logical AND                                  \\
+    $\text{org}(e)$    & Origin vertex index of edge $e$              \\
+    $\text{dst}(e)$    & Destination vertex index of edge $e$         \\
+    $\text{inc}(i)$    & Incident edges of vertex $i$\\
+    $\text{opp}(e,i)$  & For an edge $e$ connected to a vertex $v$, the vertex on the other end of $e$, distinct from $v$.
+\end{tabular}
+For example, if $e \in \text{inc}(v)$, then $v$ is either in $\text{org}(e)$ or $\text{dst}(e)$. Moreover, if $v=\text{org}(e)$, then $v = \text{opp}(e, \text{dst}(e))$.
+
+\subsection*{Sets}
+
+\noindent
+\begin{tabular}{p{1.5cm}p{6.5cm}}
+    $\mathcal{V}$         & indices of the vertices or buses of $\mathcal{G}$    \\
+    $\mathcal{E}$         & indices of the edges or branches of $\mathcal{G}$    \\
+    $\mathcal{C}$         & edge indices of contingencies including $0$ for none \\
+    $\mathcal{C}^{\star}$ & edge indices of contingencies, $\mathcal{C}^{*}\subset \mathcal{E}$.
+\end{tabular}
+
+
+\subsection*{Matrices, vectors and scalar}
+
+\noindent
+\begin{tabular}{p{1.5cm}p{6.5cm}}
+    $\pmb{A}$           & The incidence matrix of $\mathcal{G}$. $\pmb{A}_{ve}=0$ if the edge $e$ does not connect the vertex $v$, $1$ if it is oriented toward $v$; $-1$ otherwise. \\
+    $\pmb{0}, \pmb{1}$  & vectors filled respectively with 0 and 1                                                                                                             \\
+    $\pmb{g},\ \pmb{d}$ & Generations, loads on buses                                                                                                                       \\
+    $\pmb{p}$ & $\pmb{p} = \pmb{g} - \pmb{d}$ Net injections on buses                                                                                                                       \\
+    $\pmb{b}$           & Susceptances of branches                                                                                                                             \\
+    $\pmb{v}$           & Binary vector indicating branch openings in the base case. $v_{e}= 1$ if edge $e$ is open, 0 otherwise                                                               \\
+    $\pmb{\mathfrak{p}}$      & $\mathfrak{p}_{c}$ is the probability of occurrence of contingency $c \in \mathcal{C}$                                                               \\
+\end{tabular}
+
+\noindent
+
+\medskip
+\noindent
+For a contingency $c \in \mathcal{C}$:
+
+\noindent
+\begin{tabular}{p{1.5cm}p{6.5cm}}
+    $\hat{\pmb{g}}_{c},\ \hat{\pmb{d}}_{c}$ & Post-contingency generations and loads on buses                                                                     \\
+    $\pmb{f}_{c}$                           & Directed flows in the edges                                                                                          \\
+    $\pmb{\phi}_{c}$                        & Voltage phase angles in the buses                                                                           \\
+    $\pmb{p}^{\star}_{c}$                   & Net injections in N-1 mirror graph                                                                          \\
+    $\pmb{f}^{\star}_{c}$                   & Flows in N-1 mirror graph                                                                                   \\
+    $\pmb{w}_{c}$                           & Binary vector indicating that the branch is opened either in the base case ($\pmb{v}$) or because of the contingency $c$                                                                     \\
+    $\pmb{\pi}_{c}$                         & Binary vector indicating the energized status of buses. $\pmb{\pi}_{c,i}=1$ if bus $i$ is energized, 0 else \\
+    $\psi_{c,i,e}$                          & Variable indicating whether the bus connected to bus $i$ via edge $e$ is energized\\
+    $\sigma_{c}$                            & Generation scaling factor
+\end{tabular}
+
+\medskip

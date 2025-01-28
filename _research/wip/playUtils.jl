@@ -6,9 +6,10 @@ function create_case(case::String, buslabels=lab -> "$lab")
     sys = System(joinpath("data", "exp_raw", "case", "$case.m"))
     coord = load_coord(joinpath("data", "exp_raw", "coord", "$case.csv"), buslabels)
     g = network2graph(sys, buslabels)
+    bus_confs = Int[]
 
-    add_constraint(g, b -> b.p_max = 1.1)
     if case == "case14"
+        add_constraint(g, b -> b.p_max = 1.1)
         g[buslabels(14)] = 1
         g[buslabels(8)] = 0.1
         g["H"] = 0.5
@@ -18,9 +19,16 @@ function create_case(case::String, buslabels=lab -> "$lab")
         g["D", "E"].p_max = 1.7
         g["B", "E"].p_max = 0.9
         g["D", "I"].p_max = 0.33
-
         bus_confs = [BusConf(6, [SubBus(-0.17, [7, 9])])]
+
+    elseif case == "case30"
+        add_constraint(g, b -> b.p_max = .25)
+        g["12","13"].p_max = .4
+        g["6","8"].p_max = .4
+        g["4","6"].p_max = .4
     end
+
+
     balance!(g, all_non_zero_uniform)
 
     g, bus_confs, coord
@@ -49,7 +57,7 @@ end
 
 function identifycriticalbranch(model)
     if !is_solved_and_feasible(model)
-        println("model not solved")
+        @info "model not solved"
         return
     end
     ol = value(model[:overload]) + model.ext[:r].ρ_min_bound
@@ -64,7 +72,7 @@ end
 
 function displayflows(model)
     if !is_solved_and_feasible(model)
-        println("model not solved")
+        @info "model not solved"
     end
     for flow in model[:flows]
         println("$flow: $(value(flow))")
@@ -73,7 +81,7 @@ end
 
 function showallvalues(model)
     if !is_solved_and_feasible(model)
-        println("model not solved")
+        @info "model not solved"
         return
     end
     foreach(k -> println("$k: $(value(k))"), all_variables(model))
@@ -81,18 +89,19 @@ end
 
 function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="", kwargs...)
     bus_orig = isnothing(bus_orig) ? label_for(g, 1) : bus_orig
-    g_cc = connected(g, bus_orig, outages=outages, trip=trip)
+    thetrip = isa(trip, Tuple) ? e_code_for(g, trip...) : trip
+    g_cc = connected(g, bus_orig, outages=outages, trip=thetrip)
 
     if nv(g) == nv(g_cc)
         h = g
         houtages = outages
-        htrip = trip
+        htrip = thetrip
     else
         h = g_cc
         balance!(h)
         houtages = Int[]
         htrip = nothing
-        label = label == "" ? "" : L"\textbf{%$label}(%$(floor(Int, 100*(total_load(g)-total_load(g_cc)))))"
+        label = label == "" ? "" : L"\textbf{%$label}(%$(round(Int, 100*(total_load(g)-total_load(g_cc)))))"
     end
 
     dc_draw = dc_flow(h, outages=houtages, trip=htrip, pf_type=pf_linalg)
@@ -111,7 +120,7 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
 
         if !(trip in outages)
             draw(
-                g,
+                g;
                 outages=outages,
                 trip=trip,
                 fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
@@ -121,10 +130,11 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
                 node_size=nothing,
                 edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
                 edge_coloring=br -> br.trip ? :black : br.outage ? :white : :black,
-                layout=layout)
+                kwargs...
+                )
 
             calcanddraw(
-                g,
+                g;
                 bus_orig=bus_orig,
                 outages=outages,
                 trip=trip,
@@ -135,10 +145,30 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
                 node_size=nothing,
                 edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
                 edge_coloring=br -> br.trip ? :black : br.outage ? :transparent : (abs(br.p > br.p_max + 1e-6)) ? :red : :green3,
-                layout=layout,
                 label=L"%$label", kwargs...)
 
         end
     end
     fig
+end
+
+function c_model_to_graph(g, model, orig_bus)
+    if !is_solved_and_feasible(model)
+        @info "model not fesible"
+        return
+    else
+        h=deepcopy(g)
+        openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
+        _edges = collect(edges(h))
+        for (i, f) in enumerate(value.(model[:c_flows]))
+            br = e_index_for(h, _edges[i])
+            br.p = f/100
+        end
+        for v in vertices(h)
+            h[label_for(g, v)] = 1/100
+        end
+        h[orig_bus] = -(nv(h)-1)/100
+
+        draw(h , outages = openings, layout = layout, title = "Connectivity flows");
+    end
 end

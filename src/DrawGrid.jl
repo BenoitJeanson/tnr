@@ -1,4 +1,3 @@
-# module DrawGrid
 using LaTeXStrings
 using Graphs
 using MetaGraphsNext
@@ -74,7 +73,8 @@ function draw(g_orig::MetaGraph;
                 edge_style = branch -> branch.trip ? (:dot, :dense) : :solid,
                 edge_width = br -> br.outage || br.trip ? 4 : 2,
                 arrow_size = 25,
-                title = ""
+                title = "",
+                kwargs...
                 )
 
     g = copy(g_orig)
@@ -132,6 +132,7 @@ function draw(g_orig::MetaGraph;
         edge_width = [edge_width(b) for b in branches],
         arrow_size = [b.outage || b.trip ? 0 : arrow_size for b in branches],
         arrow_shift = :end,
+        kwargs...
         )
     hidedecorations!(ax)
     hidespines!(ax)
@@ -139,5 +140,3 @@ function draw(g_orig::MetaGraph;
     ax.aspect = DataAspect()
     fig
 end
-
-# end

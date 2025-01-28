@@ -7,6 +7,7 @@ using Logging
 using Graphs
 using MetaGraphsNext
 using PowerSystems
+using Bijections
 
 mutable struct Branch
     b::Float64
@@ -48,11 +49,11 @@ function add_subBus(g::MetaGraph, busconfs::Vector{BusConf})
     e_labels = collect(edge_labels(h))
     edges_origin = collect(edges(h))
 
-    edges_to_change = Dict{Int, Tuple{String, String}}()
+    edges_to_change = Dict{Int,Tuple{String,String}}()
 
     for bc in busconfs
         bus_label = label_for(g, bc.bus)
-        for (i,sb) in enumerate(bc.subBuses), br in sb.branch_ids
+        for (i, sb) in enumerate(bc.subBuses), br in sb.branch_ids
             new_bus_label = "$bus_label-$i"
             h[bus_label] = g[bus_label] - sb.p
             h[new_bus_label] = sb.p
@@ -62,7 +63,7 @@ function add_subBus(g::MetaGraph, busconfs::Vector{BusConf})
             rem_edge!(h, src(e), dst(e))
         end
     end
-    
+
     for (e, elab) in edges_to_change
         h[elab...] = g[e_labels[e]...]
     end
@@ -76,16 +77,16 @@ function update_edge_ids(edge_ids::Vector{Int}, id::Int, g_orig::MetaGraph, g_mo
         fl == nothing ? st : st[1:fl-1]
     end
 
-    if id ≠ 0 
+    if id ≠ 0
         push!(edge_ids, id)
     end
     result = zeros(Int, length(edge_ids))
 
     edges_o = collect(edge_labels(g_orig))
     edges_m = [(extract_to_dash(el[1]), extract_to_dash(el[2])) for el in edge_labels(g_modified)]
-    
+
     ids_labels = [edges_o[id] for id in edge_ids]
-    
+
     for (i_m, e_modif) in enumerate(edges_m)
         for (i_o, elo) in enumerate(ids_labels)
             if elo == e_modif
@@ -96,7 +97,7 @@ function update_edge_ids(edge_ids::Vector{Int}, id::Int, g_orig::MetaGraph, g_mo
     end
     if id ≠ 0
         id_res = pop!(result)
-    else 
+    else
         id_res = 0
     end
     result, id_res
@@ -122,33 +123,45 @@ function _initgraph()
     MetaGraph(
         DiGraph();
         label_type=String,
-        vertex_data_type = Float64,
-        edge_data_type = Branch,
+        vertex_data_type=Float64,
+        edge_data_type=Branch,
+        graph_data=(
+            edges = Bijection{Int, Tuple{String, String}}(),)
     )
 end
 
-function build_simple_grid(;micro = true)
+function _mapedges(g::MetaGraph)
+    gd = g[].edges
+    foreach(ie -> gd[ie[1]] = ie[2] , enumerate(edge_labels(g)))
+end
+
+e_label_for(g::MetaGraph, i::Int) = g[].edges[i]
+e_code_for(g::MetaGraph, a::String, b::String) = g[].edges((a,b))
+
+
+function build_simple_grid(; micro=true)
     g = _initgraph()
     g["1"] = micro ? -2 : -3
-    for i=2:(micro ? 3 : 4)
+    for i = 2:(micro ? 3 : 4)
         g["$i"] = 1
     end
-    g["1","2"] = Branch(1, 1)
-    g["2","3"] = Branch(1, 1)
+    g["1", "2"] = Branch(1, 1)
+    g["2", "3"] = Branch(1, 1)
     if micro
-        g["1","3"] = Branch(1,1)
+        g["1", "3"] = Branch(1, 1)
     else
-        g["3","4"] = Branch(1, 1)
-        g["2","4"] = Branch(1, 1)
-        g["1","4"] = Branch(1, 1)
+        g["3", "4"] = Branch(1, 1)
+        g["2", "4"] = Branch(1, 1)
+        g["1", "4"] = Branch(1, 1)
     end
+    _mapedges(g)
     g
 end
 
-function network2graph(sys::System, buslabels = num->"$num")
+function network2graph(sys::System, buslabels=num -> "$num")
     g = _initgraph()
 
-    init_p_bus(g, sys, objType, op) = 
+    init_p_bus(g, sys, objType, op) =
         for k in get_components(objType, sys)
             label = buslabels(k.bus.number)
             @debug "bus $label\t$(repr(op)) $(k.active_power)"
@@ -156,7 +169,7 @@ function network2graph(sys::System, buslabels = num->"$num")
         end
     init_p_bus(g, sys, PowerLoad, +)
     init_p_bus(g, sys, Generator, -)
-    
+
     @debug "branches"
     for k in get_components(ACBranch, sys)
         labelfrom = buslabels(k.arc.from.number)
@@ -170,30 +183,40 @@ function network2graph(sys::System, buslabels = num->"$num")
             g[labelto] = 0
         end
         @debug "(\"$labelfrom\", \"$labelto\") "
-        g[labelfrom, labelto] = Branch(1/k.x, 10, k.arc.from.base_voltage, k.arc.to.base_voltage)
+        if labelfrom < labelto
+            g[labelfrom, labelto] = Branch(1 / k.x, 10, k.arc.from.base_voltage, k.arc.to.base_voltage)
+        else
+            g[labelto, labelfrom] = Branch(1 / k.x, 10, k.arc.to.base_voltage, k.arc.from.base_voltage)
+        end
     end
-    
+
     to_remove = []
     for node in vertices(g)
-        if isempty(inneighbors(g,node)) && isempty(outneighbors(g,node))
-            push!(to_remove, label_for(g,node))
+        if isempty(inneighbors(g, node)) && isempty(outneighbors(g, node))
+            push!(to_remove, label_for(g, node))
         end
     end
     @debug !isempty(to_remove) && "\nremove nodes: $to_remove"
 
-    foreach(node-> rem_vertex!(g, code_for(g,node)), to_remove)
-    
+    foreach(node -> rem_vertex!(g, code_for(g, node)), to_remove)
+
+    _mapedges(g)
     g
+end
+
+function edge_label_to_num(g, labsrc, labdst)
+    d = getindex(g)
+    haskey(d, (labsrc, labdst)) ? d[(labsrc, labdst)] : nothing
 end
 
 @enum BalanceType all_non_zero_uniform gen_proportional
 
-function balance!(g, btype::BalanceType = gen_proportional)
+function balance!(g, btype::BalanceType=gen_proportional)
     non_zeros = [label for label in labels(g) if g[label] ≠ 0]
     imbalance = sum(g[label] for label in non_zeros)
-    
+
     if btype == all_non_zero_uniform
-        uniform = imbalance/ length(non_zeros)
+        uniform = imbalance / length(non_zeros)
         for label in non_zeros
             g[label] -= uniform
         end
@@ -220,7 +243,7 @@ function check_flow_consistency(g; v::Bool=false)
     injections = Dict(l => g[l] for l in labels(g))
 
     # Initialize net flows for each node
-    net_flows = Dict{String, Float64}()
+    net_flows = Dict{String,Float64}()
 
     # Update net flows based on branch flows
     for ((from, to), flow) in flows
@@ -251,14 +274,14 @@ function check_flow_consistency(g; v::Bool=false)
     consistent
 end
 
-add_constraint(g, fun) = foreach(e -> fun(e_index_for(g,e)), edges(g))
+add_constraint(g, fun) = foreach(e -> fun(e_index_for(g, e)), edges(g))
 
-set_limitations(branches, lim) = Dict( k => begin
-        br_out = Branch(br_in, br_in.v_nom1 == 138.0 ? lim : 10)
-    end for (k,br_in) in branches)
+set_limitations(branches, lim) = Dict(k => begin
+    br_out = Branch(br_in, br_in.v_nom1 == 138.0 ? lim : 10)
+end for (k, br_in) in branches)
 
 
-function connected(g::MetaGraph, bus_origin::String; outages = Int[], trip = nothing)
+function connected(g::MetaGraph, bus_origin::String; outages=Int[], trip=nothing)
 
     """
     _extractsubgraph is embedded as it only applies if the bus_labels are the labels of buses belonging to a single connected component 
@@ -277,7 +300,7 @@ function connected(g::MetaGraph, bus_origin::String; outages = Int[], trip = not
         end
         g_sub
     end
-    
+
     g_result = copy(g)
 
     openbranches = copy(outages)
@@ -285,21 +308,21 @@ function connected(g::MetaGraph, bus_origin::String; outages = Int[], trip = not
         push!(openbranches, trip)
     end
 
-    for (i,e) in [(i,e) for (i,e) in enumerate(edges(g_result)) if i in openbranches]
+    for (i, e) in [(i, e) for (i, e) in enumerate(edges(g_result)) if i in openbranches]
         rem_edge!(g_result, src(e), dst(e))
     end
 
     ccs = connected_components(g_result)
-    cc = ccs[findfirst(cc -> bus_origin in [label_for(g_result, v) for v in cc],ccs)]
+    cc = ccs[findfirst(cc -> bus_origin in [label_for(g_result, v) for v in cc], ccs)]
     _extractsubgraph(g_result, [label_for(g_result, v) for v in cc])
 end
 
 function total_load(g)
     result = 0
     for v in vertices(g)
-        lab = label_for(g,v)
-        if g[lab]>0
-            result+=g[lab]
+        lab = label_for(g, v)
+        if g[lab] > 0
+            result += g[lab]
         end
     end
     result

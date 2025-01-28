@@ -10,10 +10,12 @@ include(srcdir("dcpf.jl"))
 include(srcdir("tnrOptim.jl"))
 
 include("playUtils.jl")
-labs = collect('A':'Z')
 
+labs = collect('A':'Z')
 g, bus_confs, coord = create_case("case14", num -> "$(labs[num])");
 trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8]
+
+# g, bus_confs, coord = create_case("case30", num -> "$(num)");
 # g, bus_confs, coord = create_mini_case()
 
 @info "Secured DC OTS"
@@ -31,7 +33,7 @@ model, r = secured_dc_OTS(g,
 optimize!(model);
 
 
-fig = Figure(size = (1500, 800), fontsize = 30)
+fig = Figure(size = (1500, 800), fontsize = 20)
 
 trip = nothing #12
 g_base = dc_flow(g, trip = trip)

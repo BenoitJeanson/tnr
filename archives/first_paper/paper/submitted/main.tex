@@ -1,0 +1,60 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+% my packages
+\usepackage{supertabular}
+\usepackage{subcaption}
+
+\usepackage{orcidlink}
+
+% \usepackage[style=ieee]{biblatex}
+
+%IEEE origin
+% \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+%     T\kern-.8em\lower.7ex\hbox{E}\kern-.8emX}}
+
+% \addbibresource{references.bib}
+
+\begin{document}
+    \title{Risk-based approach to the Optimal Transmission Switching problem
+    \thanks{This work is part of the CRESYM project OptGrid, funded by RTE - Réseau de Transport d'Électricité.}
+    }
+
+    \author{\IEEEauthorblockN{Benoît Jeanson  } \IEEEauthorblockA{\textit{CRESYM}\\ Brussels, Belgium 
+    \\ https://orcid.org/0009-0005-4352-2604
+    }
+    \and \IEEEauthorblockN{Simon H. Tindemans } \IEEEauthorblockA{\textit{Dept. of Electrical Sustainable Energy} \\ \textit{Delft University of Technology}\\ Delft, The Netherlands \\
+    https://orcid.org/0000-0001-8369-7568}
+    }
+
+    \maketitle
+
+    \begin{abstract}
+        This paper deals with the secure Optimal Transmission Switching (OTS) problem, in situations where the TSO is, for some contingencies, forced to accept the loss of parts of the grid rather than violating operational limits. In the context of the OTS problem, an operational policy is modeled as an MILP, which incorporates a connectivity and partial grid loss analysis for branch outage contingencies.  Finally, its application to the IEEE 14-bus system is presented. Solutions similar to those observed in operation are reached by the algorithm, notably revealing the preventive-openings-cascade phenomenon. 
+    \end{abstract}
+
+    \begin{IEEEkeywords}
+        transmission network, reconfiguration, topology, switching, risk,
+        connectedness
+    \end{IEEEkeywords}
+
+    \input{terminology.tex}
+    \input{introduction.tex}
+    \input{methodology.tex}
+    \input{modeling.tex}
+    \input{results.tex}
+    \input{conclusion.tex}
+    \section*{Acknowledgment}
+    The authors express their thanks to the 
+    RTE Research and Department team,  especially Nourredine
+    Henka, Sami Tazi, Patrick Panciatici and Lucas Saludjian for helpful discussions.
+
+    \bibliographystyle{IEEEtran}
+    \bibliography{IEEEabrv,references_bibtex}
+\end{document}

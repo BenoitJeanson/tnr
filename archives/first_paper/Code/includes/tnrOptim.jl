@@ -84,8 +84,7 @@ function OTS_flows_phases!(model, r::TNR)
     ϕ = model[:ϕ]
     c_w = model[:c_w]
 
-    big_M = 10 #TODO: to change
-    bus_orig = 12#TODO: to change
+    big_M = 10 #TODO: to change    bus_orig = 12#TODO: to change
 
     @constraint(model, [c in cases(r)], ϕ[c, bus_orig] == 0)
     @constraint(model, [c in cases(r), bus in buses(r); bus ≠ bus_orig], #TODO: probably bus ≠ bus_orig is not necessary but can help in case of numerical instability: the slack takes it.
