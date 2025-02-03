@@ -22,10 +22,10 @@ function create_case(case::String, buslabels=lab -> "$lab")
         bus_confs = [BusConf(6, [SubBus(-0.17, [7, 9])])]
 
     elseif case == "case30"
-        add_constraint(g, b -> b.p_max = .25)
-        g["12","13"].p_max = .4
-        g["6","8"].p_max = .4
-        g["4","6"].p_max = .4
+        add_constraint(g, b -> b.p_max = 0.25)
+        g["12", "13"].p_max = 0.4
+        g["6", "8"].p_max = 0.4
+        g["4", "6"].p_max = 0.4
     end
 
 
@@ -33,6 +33,30 @@ function create_case(case::String, buslabels=lab -> "$lab")
 
     g, bus_confs, coord
 end
+
+function create_multiplecase(n::Int=2)
+    labs = collect('A':'Z')
+    g_base, _, coord = create_case("case14", num -> "$(labs[num])")
+    g = copy(g_base)
+    for i in 2:n
+        for v in vertices(g_base)
+            lab = label_for(g_base, v)
+            if lab ≠ "A"
+                g["$(lab)$i"] = g_base[lab]
+                pt = coord[lab]
+                coord["$(lab)$i"] = Point(i ≤ 2 ? pt[1] : (-pt[1] - 2), i==3 ? pt[2] : -pt[2] - 2)
+            end
+        end
+        for e in edges(g_base)
+            labs, labd = lsrc(g_base, e), ldst(g_base, e)
+            g[labs == "A" ? "A" : "$(labs)$i", labd == "A" ? "A" : "$(labd)$i"] = deepcopy(g_base[labs, labd])
+        end
+    end
+    coord["A"] = Point(n>2 ? -1 : 0, -1)
+    g["A"] = n * g["A"]
+g, coord
+end
+
 
 function create_mini_case(micro=false)
     g = build_simple_grid(micro=micro)
@@ -131,7 +155,7 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
                 edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
                 edge_coloring=br -> br.trip ? :black : br.outage ? :white : :black,
                 kwargs...
-                )
+            )
 
             calcanddraw(
                 g;
@@ -157,18 +181,22 @@ function c_model_to_graph(g, model, orig_bus)
         @info "model not fesible"
         return
     else
-        h=deepcopy(g)
+        h = deepcopy(g)
         openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
         _edges = collect(edges(h))
         for (i, f) in enumerate(value.(model[:c_flows]))
             br = e_index_for(h, _edges[i])
-            br.p = f/100
+            br.p = f / 100
         end
         for v in vertices(h)
-            h[label_for(g, v)] = 1/100
+            h[label_for(g, v)] = 1 / 100
         end
-        h[orig_bus] = -(nv(h)-1)/100
+        h[orig_bus] = -(nv(h) - 1) / 100
 
-        draw(h , outages = openings, layout = layout, title = "Connectivity flows");
+        draw(h, outages=openings, layout=layout, title="Connectivity flows")
     end
+end
+
+function warmstart!(tomodel, frommodel, var)
+    set_start_value.(tomodel[var], value.(frommodel[var]))
 end

@@ -294,9 +294,6 @@ function OTS_N_1_connectednes!(model, r::TNR, bus_origin)
     cn1_π = model[:cn1_π]
     cn1_ψ = model[:cn1_ψ]
 
-    @warn "a, and b removed from N-1 connectedness"
-    # @constraint(model, [n_1cases(r)], cn1_a[:] .+ cn1_b[:] .== 1)
-
     @constraint(model, [c in n_1cases(r), e in edge_ids(r)], cn1_flows[c, e] ≤ bigM_nb_v * (1 - c_w[c, e]))
     @constraint(model, [c in n_1cases(r), e in edge_ids(r)], -cn1_flows[c, e] ≤ bigM_nb_v * (1 - c_w[c, e]))
 
@@ -305,15 +302,7 @@ function OTS_N_1_connectednes!(model, r::TNR, bus_origin)
     @constraint(model, [c in n_1cases(r)],
         cn1_p_orig[c] - sum(r.A[e, bus_origin] * cn1_flows[c, e] for e in edge_ids(r)) == 0)
 
-    # @constraint(model, [c in n_1cases(r)],   cn1_p_orig[c] + nb_buses(r) - 1  ≤ bigM_nb_v * cn1_a[c])
-    # @constraint(model, [c in n_1cases(r)], -(cn1_p_orig[c] + nb_buses(r) - 1) ≤ bigM_nb_v * cn1_a[c])
-
     @constraint(model, [c in n_1cases(r)], cn1_π[c, bus_origin] == 1)
-
-    # @constraint(model, [c in n_1cases(r)],
-    #       sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1  ≤ bigM_π * cn1_b[c])
-    # @constraint(model, [c in n_1cases(r)],
-    #     -(sum(abs(r.A[r.outages[c], bus]) * cn1_π[c, bus] for bus in buses(r)) - 1) ≤ bigM_π * cn1_b[c])
 
     @constraint(model, [c in n_1cases(r), bus in buses(r); bus ≠ bus_origin],
         cn1_π[c, bus] ≤ sum(cn1_ψ[c, bus, e] for e in incident(r, bus)))
@@ -457,6 +446,33 @@ function N_balance!(model, r::TNR)
             @constraint(model, load[nb_cases(r), bus] == r.p[bus])
         end
     end
+end
+
+function OTS_balance_one_bus(model, r::TNR)
+    @warn "THIS IS THE OTS BALANCE ONE BUS ONLY ---- TO PLAY ONLY"
+    @variable(model, σ[n_1cases(r)] ≥ 0)
+    bigM = 10 # TODO: to define
+
+    gen = model[:gen]
+    load = model[:load]
+    cn1_π = model[:cn1_π]
+    for c in n_1cases(r), bus in buses(r)
+        if r.p[bus] < 0
+            @constraint(model, load[c, bus] == 0)
+            @constraint(model, gen[c, bus] + (bus == 12 ? σ[c] : 1) * r.p[bus] ≤ bigM * (1 - cn1_π[c, bus]))
+            @constraint(model, -(gen[c, bus] + (bus == 12 ? σ[c] : 1) * r.p[bus]) ≤ bigM * (1 - cn1_π[c, bus]))
+            @constraint(model, gen[c, bus] ≤ bigM * cn1_π[c, bus])
+            @constraint(model, -gen[c, bus] ≤ bigM * cn1_π[c, bus])
+        else
+            @constraint(model, gen[c, bus] == 0)
+            @constraint(model, load[c, bus] - r.p[bus] ≤ bigM * (1 - cn1_π[c, bus]))
+            @constraint(model, -(load[c, bus] - r.p[bus]) ≤ bigM * (1 - cn1_π[c, bus]))
+            @constraint(model, load[c, bus] ≤ bigM * cn1_π[c, bus])
+            @constraint(model, -load[c, bus] ≤ bigM * cn1_π[c, bus])
+        end
+    end
+
+    @constraint(model, [c in n_1cases(r)], sum(load[c, :] .- gen[c, :]) == 0)
 end
 
 function OTS_balance!(model, r::TNR)
@@ -621,12 +637,17 @@ function secured_dc_OTS(g::MetaGraph;
         end
         OTS_N_connectedness!(model, r)
 
+        @warn "N-1 connectedness hardly set to bus 12"
         OTS_N_1_connectednes!(model, r, 12)# TODO: improve bus_orig choice !
 
-        OTS_balance!(model, r)
+        OTS_balance_one_bus(model, r)
+        # OTS_balance!(model, r)
+
     else
         TNR_flows!(model, r)
         TNR_N_connectedness!(model, r)
+
+        @warn "N-1 connectedness hardly set to bus 1"
         TNR_N_1_connectednes!(model, r, 1)
         TNR_balance!(model, r)
 
@@ -641,7 +662,6 @@ function secured_dc_OTS(g::MetaGraph;
     # @constraint(model, overload ≤ 0)
 
     lostload = model[:lostload]
-    @warn "Cost function with 10 * sum model[:VBranch]"
     @objective(model, Min,
         sum(lostload[c] for c in n_1cases(r)))
     # overload)
