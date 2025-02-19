@@ -6,14 +6,15 @@ include("GraphUtils.jl")
 @enum TNR_PF_TYPE tnr_pf_pst tnr_pf_phase
 @proto struct TNR
     g::MetaGraph
-    is_single_ρ::Bool
-    ρ_min_bound::Float64
     n_1_connectedness::Bool
     bus_confs::Vector{BusConf}
     allow_branch_openings::Bool
     OTS_only::Bool
     tnr_pf::TNR_PF_TYPE
-
+    opf::Bool
+    bus_orig::String
+    
+    bus_orig_id::Int
     outages::AbstractArray{Int}
     A::AbstractMatrix{Int}
     branches::Vector{Branch}
@@ -25,13 +26,13 @@ end
 
 function TNR(g::MetaGraph,
         contingencies::AbstractArray{Int},
-        is_single_ρ::Bool,
-        ρ_min_bound::Float64,
         n_1_connectedness::Bool,
         bus_confs::Vector{BusConf},
         allow_branch_openings::Bool,
         OTS_only,
-        tnr_pf)
+        tnr_pf,
+        opf,
+        bus_orig)
 
     outages = collect(contingencies)
     push!(outages, 0)
@@ -39,13 +40,15 @@ function TNR(g::MetaGraph,
 
     TNR(
         g = g,
-        is_single_ρ = is_single_ρ,
-        ρ_min_bound = ρ_min_bound,
         n_1_connectedness = n_1_connectedness,
         bus_confs = bus_confs,
         allow_branch_openings = allow_branch_openings,
         OTS_only = OTS_only,
         tnr_pf = tnr_pf,
+        opf = opf,
+        bus_orig = bus_orig,
+
+        bus_orig_id = code_for(g, bus_orig),
         outages = outages,
         A = A,
         
@@ -84,6 +87,8 @@ nb_cases(tnr::TNR) = length(tnr.outages)
 cases(tnr::TNR) = cases = 1:nb_cases(tnr)
 
 n_1cases(tnr::TNR) = 1:nb_cases(tnr) - 1
+
+n_case(tnr::TNR) = nb_cases(tnr)
 
 nb_buses(tnr::TNR) = nv(tnr.g)
 

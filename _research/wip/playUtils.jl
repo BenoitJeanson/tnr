@@ -35,6 +35,8 @@ function create_case(case::String, buslabels=lab -> "$lab")
 end
 
 function create_multiplecase(n::Int=2)
+    @info "create create_multiplecase, size = $n"
+
     labs = collect('A':'Z')
     g_base, _, coord = create_case("case14", num -> "$(labs[num])")
     g = copy(g_base)

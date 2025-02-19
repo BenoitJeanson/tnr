@@ -11,32 +11,33 @@ include(srcdir("tnrOptim.jl"))
 
 include("playUtils.jl")
 
-# labs = collect('A':'Z')
-# g, bus_confs, coord = create_case("case14", num -> "$(labs[num])");
-# contingencies = 1:20
-# trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8]
+labs = collect('A':'Z')
+g, bus_confs, coord = create_case("case14", num -> "$(labs[num])");
+contingencies = 1:20
+trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8]
+bus_orig = "A"
 
 # g, bus_confs, coord = create_case("case30", num -> "$(num)");
+
 # g, bus_confs, coord = create_mini_case()
+# contingencies = 1:4
+# bus_orig = "1"
 
-nb_case=4
-g, coord = create_multiplecase(nb_case)
-contingencies = 1:(20*nb_case)
+# nb_case=4
+# g, coord = create_multiplecase(nb_case)
+# contingencies = 1:(20*nb_case)
 
-@info "Secured DC OTS"
+tnr_pf = tnr_pf_pst
+@info "Secured DC OTS, with $tnr_pf"
 model, r = secured_dc_OTS(g,
                 contingencies = contingencies,
-                # contingencies = [1, 2, 14, 15],
-                is_single_ρ = true,
-                ρ_min_bound = 1.,
-                # bus_confs = bus_confs,
-                allow_branch_openings = true,
                 OTS_only = true,
-                tnr_pf = tnr_pf_pst
+                tnr_pf = tnr_pf,
+                opf = false,
+                bus_orig = bus_orig
                 )
 
 optimize!(model);
-
 
 fig = Figure(size = (1500, 1600), fontsize = 20)
 
