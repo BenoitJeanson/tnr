@@ -40,33 +40,39 @@ function create_variables!(m::Model, r::TNR)
     @variable(m, cn1_π[n_1cases(r), buses(r)], Bin)# lower_bound = 0, upper_bound = 1)
     @variable(m, cn1_ψ[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)# lower_bound = 0, upper_bound = 1)
 
-
     if r.allow_branch_openings || r.OTS_only
-        @variable(m, v_branch[1:ne(g)], Bin)
+        @variable(m, v_branch[edge_ids(r)], Bin)
         if r.tnr_pf == tnr_pf_pst
             @variable(m, γ_branch[cases(r), edge_ids(r)])
         end
+    end
+
+    if r.tnr_pf == tnr_pf_pst
+        big_M = 5 # TODO: Change
+        @info "HARDCODED create_variables big_M for tnr-pf β boundaries: $big_M"
+        @variable(m, -big_M .≤ β[n_1cases(r)] .≤ big_M)
+    else
+        @variable(m, ϕ[cases(r), buses(r)])
     end
 
     if !r.OTS_only
         @variable(m, hatgen[cases(r), bus_conf_ids(r)] ≥ 0)
         @variable(m, hatload[cases(r), bus_conf_ids(r)] ≥ 0)
         @variable(m, v_bus[bus_conf_ids(r)], Bin)
-        @variable(m, γ_bus[cases(r), k=bus_conf_ids(r)])
 
+        @variable(m, cn1_hatπ[n_1cases(r), bc in bus_conf_ids(r)], Bin)# lower_bound = 0, upper_bound = 1)
         @variable(m, cn1_χ[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)
         @variable(m, cn1_U[bus in keys(r.bus_to_conf_ids), branch in incident(r, bus); (bus, branch) in keys(r.bus_branch_to_conf_ids)], Bin)
         @variable(m, cn1_χ_circ[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)
         @variable(m, cn1_𝚿[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)
         @variable(m, cn1_hat_𝚿[n_1cases(r), bus_conf_ids(r)], Bin)
-    end
 
-    if r.tnr_pf == tnr_pf_pst
-        big_M = 5 # TODO: Change
-        @info "HARDCODED create_variables big_M for tnr-pf β boundaries: $big_M "
-        @variable(m, -big_M .≤ β[n_1cases(r)] .≤ big_M)
-    else
-        @variable(m, ϕ[cases(r), buses(r)])
+        if r.tnr_pf == tnr_pf_pst
+            @variable(m, γ_bus[cases(r), k=bus_conf_ids(r)])
+        elseif r.tnr_pf == tnr_pf_phase
+            @variable(m, ϕ_e[cases(r), edge_ids(r), 1:2])
+            @variable(m, ϕ_bc[cases(r), bus_conf_ids(r)])
+        end
     end
 
     if r.opf
@@ -122,8 +128,56 @@ function OTS_flows_pst!(m::Model, r::TNR)
     end
 end
 
-function TNR_flows!(m::Model, r::TNR)
-    r.allow_branch_openings && (m[:v_branch] = m[:v_branch])
+function TNR_flows_to_extra_bus!(m::Model, r::TNR)
+    big_M = 5
+    @info "HARDCODED TNR_flows_to_extra_bus - bigM to $big_M"
+
+    for (bc_id, bus, sb) in ((bc_id, bc.bus, sb) for (bc_id, bc) in enumerate(r.bus_confs) for sb in bc.subBuses)
+        @constraint(m, [c in cases(r)],
+            sum(m[:flows][c, br] * r.A[br, bus] for br in sb.branch_ids) - (m[:hatload][c, bc_id] - m[:hatgen][c, bc_id]) ≤ (1 - m[:v_bus][bc_id]) * big_M)
+        @constraint(m, [c in cases(r)],
+            -(sum(m[:flows][c, br] * r.A[br, bus] for br in sb.branch_ids) - (m[:hatload][c, bc_id] - m[:hatgen][c, bc_id])) ≤ (1 - m[:v_bus][bc_id]) * big_M)
+    end
+end
+
+function TNR_flows_phases!(m::Model, r::TNR)
+    big_M = 100 # TODO: change
+    @info "HARDCODED TNR_flows - bigM to $big_M"
+
+    @constraint(m, [c in cases(r)], m[:ϕ][c, r.bus_orig_id] == 0)
+
+    # flows in the branches
+    @constraint(m, [c in cases(r)], m[:flows][c, :] .≤ (1 .- m[:c_w][c, :]) .* big_M)
+    @constraint(m, [c in cases(r)], -m[:flows][c, :] .≤ (1 .- m[:c_w][c, :]) .* big_M)
+    @constraint(m, [c in cases(r), edge in edge_ids(r)],
+        m[:flows][c, edge] - r.branches[edge].b * (m[:ϕ_e][c, edge, 2] - m[:ϕ_e][c, edge, 1]) ≤ big_M * m[:c_w][c, edge])
+    @constraint(m, [c in cases(r), edge in edge_ids(r)],
+        m[:flows][c, edge] - r.branches[edge].b * (m[:ϕ_e][c, edge, 2] - m[:ϕ_e][c, edge, 1]) ≥ -big_M * m[:c_w][c, edge])
+
+    # connect of the branch extremity phases to the bus phases
+    for (bus, edge, c) in ((b,e,c) for b in buses(r), e in edge_ids(r), c in cases(r) if r.A[e,b] ≠ 0)
+        ϕ_edge = @expression(m, r.A[edge, bus]==1 ? m[:ϕ_e][c, edge, 1] : m[:ϕ_e][c, edge, 2])
+        if (bus, edge) in keys(r.bus_branch_to_conf_ids)
+            bc = r.bus_branch_to_conf_ids[bus, edge][1] #TODO only one alternative conf per bus first !
+            @constraint(m, m[:ϕ][c,bus] - ϕ_edge ≤  big_M * m[:v_bus][bc])
+            @constraint(m, m[:ϕ][c,bus] - ϕ_edge ≥ -big_M * m[:v_bus][bc])
+            @constraint(m, m[:ϕ_bc][c, bc] - ϕ_edge ≤  big_M * m[:v_bus][bc])
+            @constraint(m, m[:ϕ_bc][c, bc] - ϕ_edge ≥ -big_M * m[:v_bus][bc])
+        else
+            @constraint(m, m[:ϕ][c,bus] - ϕ_edge == 0)
+        end
+    end
+
+    # balance the flows in substations
+    @constraint(m, [c in cases(r), bus in buses(r); bus ≠ r.bus_orig_id],
+        m[:load][c, bus] - m[:gen][c, bus] == sum(r.A'[bus, e] * m[:flows][c, e] for e in edge_ids(r)))
+
+        # balance flows in extra buses
+    TNR_flows_to_extra_bus!(m,r)
+end
+
+function TNR_flows_pst!(m::Model, r::TNR)
+    @info "TNR_flows_pst to be revisited with c_w rather than v_branch"
     big_M = 5 # TODO: change
     @info "HARDCODED TNR_flows - bigM to $big_M"
 
@@ -158,17 +212,10 @@ function TNR_flows!(m::Model, r::TNR)
                                            +
                                            δ_to_f * (outage_phase .+ line_opening_phase .+ bus_splitting_phase))
     end
-
-    for (bc_id, bus, sb) in ((bc_id, bc.bus, sb) for (bc_id, bc) in enumerate(r.bus_confs) for sb in bc.subBuses)
-        @constraint(m, [c in cases(r)],
-            sum(m[:flows][c, br] * r.A[br, bus] for br in sb.branch_ids) - (m[:hatload][c, bc_id] - m[:hatgen][c, bc_id]) ≤ (1 - m[:v_bus][bc_id]) * big_M)
-        @constraint(m, [c in cases(r)],
-            -(sum(m[:flows][c, br] * r.A[br, bus] for br in sb.branch_ids) - (m[:hatload][c, bc_id] - m[:hatgen][c, bc_id])) ≤ (1 - m[:v_bus][bc_id]) * big_M)
-    end
-
+    TNR_flows_to_extra_bus!(m,r)
 end
 
-function simple_overload!(m::Model, r::TNR)
+function overload!(m::Model, r::TNR)
     p_max = [e_index_for(r.g, br).p_max for br in edges(r.g)]
     @constraint(m, [i in cases(r)], m[:flows][i, :] .≤ p_max)
     @constraint(m, [i in cases(r)], -m[:flows][i, :] .≤ p_max)
@@ -254,16 +301,14 @@ function OTS_N_1_connectedness!(m::Model, r::TNR)
         m[:cn1_ψ][c, bus, e] ≤ 1 - m[:c_w][c, e])
 end
 
-function TNR_N_1_connectednes!(m::Model, r::TNR, bus_origin)
-    buses_wo_O = (k for k in buses(r) if k ≠ bus_origin)
+function TNR_N_1_connectednes!(m::Model, r::TNR)
+    buses_wo_O = (k for k in buses(r) if k ≠ r.bus_orig_id)
     bigM_nb_v = nb_buses(r) + 2 + nb_bus_confs(r)
-
-    @variable(m, cn1_hatπ[n_1cases(r), bc in bus_conf_ids(r)], Bin)# lower_bound = 0, upper_bound = 1)
 
     for c in n_1cases(r), bus in buses(r), edge in incident(r, bus)
         @constraint(m, m[:cn1_χ][c, bus, edge] == m[:cn1_χ_circ][c, bus, edge]
                                                   +
-                                                  sum(cn1_hatπ[c, conf]
+                                                  sum(m[:cn1_hatπ][c, conf]
                                                       for conf in get(r.bus_to_conf_ids, opposite(r, edge, bus), Int[])
                                                       if edge in r.bus_confs[conf].subBuses[1].branch_ids))
         @constraint(m, m[:cn1_χ_circ][c, bus, edge] ≤ m[:cn1_π][c, opposite(r, edge, bus)])
@@ -295,11 +340,11 @@ function TNR_N_1_connectednes!(m::Model, r::TNR, bus_origin)
         sum(m[:cn1_ψ][c, bus, edge] for edge in r.bus_confs[conf].subBuses[1].branch_ids))
 
     @constraint(m, [c in n_1cases(r), conf in bus_conf_ids(r)],
-        cn1_hatπ[c, conf] ≤ m[:v_bus][conf])
+        m[:cn1_hatπ][c, conf] ≤ m[:v_bus][conf])
     @constraint(m, [c in n_1cases(r), conf in bus_conf_ids(r)],
-        cn1_hatπ[c, conf] ≤ m[:cn1_hat_𝚿][c, conf])
+        m[:cn1_hatπ][c, conf] ≤ m[:cn1_hat_𝚿][c, conf])
     @constraint(m, [c in n_1cases(r), conf in bus_conf_ids(r)],
-        cn1_hatπ[c, conf] ≥ m[:v_bus][conf] + m[:cn1_hat_𝚿][c, conf] - 1)
+        m[:cn1_hatπ][c, conf] ≥ m[:v_bus][conf] + m[:cn1_hat_𝚿][c, conf] - 1)
 
     for ((bus, branch), confs) in r.bus_branch_to_conf_ids
         @constraint(m, [conf in confs], m[:cn1_U][bus, branch] ≥ m[:v_bus][conf])
@@ -324,22 +369,22 @@ function TNR_N_1_connectednes!(m::Model, r::TNR, bus_origin)
     @constraint(m, [c in n_1cases(r), e in edge_ids(r)], m[:cn1_flows][c, e] ≤ bigM_nb_v * (1 - m[:c_w][c, e]))
     @constraint(m, [c in n_1cases(r), e in edge_ids(r)], -m[:cn1_flows][c, e] ≤ bigM_nb_v * (1 - m[:c_w][c, e]))
 
-    @constraint(m, [c in n_1cases(r), bus_conf_ids(r)], cn1_hatπ[c, :] .≤ m[:v_bus][:])
+    @constraint(m, [c in n_1cases(r), bus_conf_ids(r)], m[:cn1_hatπ][c, :] .≤ m[:v_bus][:])
 
     for (bc_id, bus, sb) in ((bc_id, bc.bus, sb) for (bc_id, bc) in enumerate(r.bus_confs) for sb in bc.subBuses)
         @constraint(m, [c in n_1cases(r)],
-            sum(m[:cn1_flows][c, edge] * r.A[edge, bus] for edge in sb.branch_ids) - cn1_hatπ[c, bc_id] ≤ (1 - m[:v_bus][bc_id]) * bigM_nb_v)
+            sum(m[:cn1_flows][c, edge] * r.A[edge, bus] for edge in sb.branch_ids) - m[:cn1_hatπ][c, bc_id] ≤ (1 - m[:v_bus][bc_id]) * bigM_nb_v)
         @constraint(m, [c in n_1cases(r)],
-            sum(m[:cn1_flows][c, edge] * r.A[edge, bus] for edge in sb.branch_ids) - cn1_hatπ[c, bc_id] ≥ -(1 - m[:v_bus][bc_id]) * bigM_nb_v)
+            sum(m[:cn1_flows][c, edge] * r.A[edge, bus] for edge in sb.branch_ids) - m[:cn1_hatπ][c, bc_id] ≥ -(1 - m[:v_bus][bc_id]) * bigM_nb_v)
     end
 
     @constraint(m, [c in n_1cases(r), bus in buses_wo_O],
-        sum(cn1_hatπ[c, bc_id] for bc_id in get(r.bus_to_conf_ids, bus, Int[])) + m[:cn1_π][c, bus] - sum(r.A[edge, bus] * m[:cn1_flows][c, edge] for edge in incident(r, bus)) == 0)
+        sum(m[:cn1_hatπ][c, bc_id] for bc_id in get(r.bus_to_conf_ids, bus, Int[])) + m[:cn1_π][c, bus] - sum(r.A[edge, bus] * m[:cn1_flows][c, edge] for edge in incident(r, bus)) == 0)
 
-    @constraint(m, [c in n_1cases(r)], m[:cn1_π][c, bus_origin] == 1)
+    @constraint(m, [c in n_1cases(r)], m[:cn1_π][c, r.bus_orig_id] == 1)
 
     @constraint(m, [c in n_1cases(r)],
-        m[:cn1_p_orig][c] + sum(r.A[edge, bus_origin] * m[:cn1_flows][c, edge] for edge in incident(r, bus_origin)) == 0)
+        m[:cn1_p_orig][c] + sum(r.A[edge, r.bus_orig_id] * m[:cn1_flows][c, edge] for edge in incident(r, r.bus_orig_id)) == 0)
 end
 
 function N_balance!(m::Model, r::TNR)
@@ -554,10 +599,13 @@ function secured_dc_OTS(g::MetaGraph;
         end
 
     else
-        TNR_flows!(model, r)
+        if r.tnr_pf == tnr_pf_pst
+            TNR_flows_pst!(model, r)
+        elseif r.tnr_pf == tnr_pf_phase
+            TNR_flows_phases!(model, r)
+        end
         TNR_N_connectedness!(model, r)
-        @info "HARDCODED Bus orig = 1 in secured_dc_OTS"
-        TNR_N_1_connectednes!(model, r, 1)
+        TNR_N_1_connectednes!(model, r)
         TNR_balance!(model, r)
 
         @constraint(model, [bus in keys(r.bus_to_conf_ids)], sum(model[:v_bus][bc] for bc in r.bus_to_conf_ids[bus]) ≤ 1)
@@ -565,7 +613,7 @@ function secured_dc_OTS(g::MetaGraph;
 
     loadloss!(model, r)
 
-    simple_overload!(model, r)
+    overload!(model, r)
 
     @objective(model, Min,
         sum(model[:lostload][c] for c in n_1cases(r)) +
