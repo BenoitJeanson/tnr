@@ -8,6 +8,7 @@ using Graphs
 using MetaGraphsNext
 using PowerSystems
 using Bijections
+using ProtoStructs
 
 mutable struct Branch
     b::Float64
@@ -37,6 +38,42 @@ end
 mutable struct BusConf
     bus::Int
     subBuses::Vector{SubBus}
+end
+
+
+e_label_for(g::MetaGraph, i::Int) = g[].edges[i]
+e_code_for(g::MetaGraph, a::String, b::String) = g[].edges((a, b))
+
+function e_label_for(g::MetaGraph, edge_ids::AbstractArray{Int})
+    [e_label_for(g, i) for i in edge_ids]
+end
+
+function e_code_for(g::MetaGraph, edges::AbstractArray{Tuple{String,String}})
+    [e_code_for(g, e...) for e in edges]
+end
+
+function to_label(g::MetaGraph, buses_branches::Dict{Int,AbstractArray{Int}})
+    dlab = Dict{String,Vector{Tuple{String,String}}}()
+    for bus in keys(buses_branches)
+        dlab[label_for(g, bus)] = [e_label_for(g, e) for e in buses_branches[bus]]
+    end
+    dlab
+end
+
+function to_code(g::MetaGraph, buses_branches::Dict{String,AbstractArray{Tuple{String,String}}})
+    dcode = Dict{Int,Vector{Int}}()
+    for bus in keys(buses_branches)
+        dcode[code_for(g, bus)] = [e_code_for(g, e[1], e[2]) for e in buses_branches[bus]]
+    end
+    dcode
+end
+
+function to_label(g::MetaGraph, buses::AbstractArray{Int})
+    [label_for(g, bus) for bus in buses]
+end
+
+function to_code(g::MetaGraph, buses::AbstractArray{String})
+    [code_for(g, bus) for bus in buses]
 end
 
 lsrc(g::MetaGraph, e::Graphs.SimpleEdge) = label_for(g, src(e))
@@ -71,10 +108,11 @@ function add_subBus(g::MetaGraph, busconfs::Vector{BusConf})
     h
 end
 
+# TODO: consider using e_label_for 
 function update_edge_ids(edge_ids::Vector{Int}, id::Int, g_orig::MetaGraph, g_modified::MetaGraph)
     function extract_to_dash(st::String)
         fl = findlast('-', st)
-        fl == nothing ? st : st[1:fl-1]
+        isnothing(fl) ? st : st[1:fl-1]
     end
 
     if id ≠ 0
@@ -126,17 +164,15 @@ function _initgraph()
         vertex_data_type=Float64,
         edge_data_type=Branch,
         graph_data=(
-            edges = Bijection{Int, Tuple{String, String}}(),)
+            edges=Bijection{Int,Tuple{String,String}}(),)
     )
 end
 
-function _mapedges(g::MetaGraph)
+function _mapedges!(g::MetaGraph)
     gd = g[].edges
-    foreach(ie -> gd[ie[1]] = ie[2] , enumerate(edge_labels(g)))
+    foreach(k -> delete!(gd, k), keys(gd))
+    foreach(ie -> gd[ie[1]] = ie[2], enumerate(edge_labels(g)))
 end
-
-e_label_for(g::MetaGraph, i::Int) = g[].edges[i]
-e_code_for(g::MetaGraph, a::String, b::String) = g[].edges((a,b))
 
 
 function build_simple_grid(; micro=true)
@@ -154,7 +190,7 @@ function build_simple_grid(; micro=true)
         g["2", "4"] = Branch(1, 1)
         g["1", "4"] = Branch(1, 1)
     end
-    _mapedges(g)
+    _mapedges!(g)
     g
 end
 
@@ -200,7 +236,7 @@ function network2graph(sys::System, buslabels=num -> "$num")
 
     foreach(node -> rem_vertex!(g, code_for(g, node)), to_remove)
 
-    _mapedges(g)
+    _mapedges!(g)
     g
 end
 

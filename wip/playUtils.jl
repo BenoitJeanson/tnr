@@ -1,6 +1,6 @@
-include(srcdir("DrawGrid.jl"))
-include(srcdir("GraphUtils.jl"))
-include(srcdir("dcpf.jl"))
+include("../src/DrawGrid.jl")
+include("../src/GraphUtils.jl")
+include("../src/dcpf.jl")
 
 function create_case(case::String, buslabels=lab -> "$lab")
     sys = System(joinpath("data", "exp_raw", "case", "$case.m"))
@@ -46,7 +46,7 @@ function create_multiplecase(n::Int=2)
             if lab ≠ "A"
                 g["$(lab)$i"] = g_base[lab]
                 pt = coord[lab]
-                coord["$(lab)$i"] = Point(i ≤ 2 ? pt[1] : (-pt[1] - 2), i==3 ? pt[2] : -pt[2] - 2)
+                coord["$(lab)$i"] = Point(i ≤ 2 ? pt[1] : (-pt[1] - 2), i == 3 ? pt[2] : -pt[2] - 2)
             end
         end
         for e in edges(g_base)
@@ -54,9 +54,9 @@ function create_multiplecase(n::Int=2)
             g[labs == "A" ? "A" : "$(labs)$i", labd == "A" ? "A" : "$(labd)$i"] = deepcopy(g_base[labs, labd])
         end
     end
-    coord["A"] = Point(n>2 ? -1 : 0, -1)
+    coord["A"] = Point(n > 2 ? -1 : 0, -1)
     g["A"] = n * g["A"]
-g, coord
+    g, coord
 end
 
 
@@ -201,4 +201,60 @@ end
 
 function warmstart!(tomodel, frommodel, var)
     set_start_value.(tomodel[var], value.(frommodel[var]))
+end
+
+function retrieve_flows!(g::MetaGraph, model::Model, case::Int)
+    !is_solved_and_feasible(model) && @error "model not solved"
+    for (i, flow) in enumerate(value.(model[:flows][case, :]))
+        g[e_label_for(g, i)...].p = flow
+    end
+end
+
+function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_phases=nothing)
+    fig = Figure(size=(1500, 1600), fontsize=20)
+
+    if isnothing(fixed_buses)
+        g_base = dc_flow(g)
+    else
+        g_base = dc_flow(g;
+            fixed_buses=isa(fixed_buses, AbstractArray{Int}) ? fixed_buses : to_code(g, fixed_buses),
+            fixed_phases=fixed_phases)
+    end
+    layout = isa(coord, Dict{String,Point2}) ? coord : Stress(Ptype=Float32)
+    draw(g_base, fig=fig[1, 1], layout=layout, title="$(r.tnr_pf)")
+
+    openings = Int[]
+    applied_conf = BusConf[]
+
+    display(solution_summary(model))
+
+    if is_solved_and_feasible(model)
+        store_result(model, "store_result.csv")
+        value(model[:overload]) > 0 && @info "Overload: $(value(model[:overload]))"
+
+        if r.allow_branch_openings || r.OTS_only
+            openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
+            println("Open: $openings")
+            println([collect(edge_labels(g))[i] for i in openings])
+        end
+
+        if r.bus_confs ≠ BusConf[] && !r.OTS_only
+            println("v_bus: $(value.(model[:v_bus]))")
+            applied_conf = BusConf[r.bus_confs[i] for (i, v) in enumerate(value.(model[:v_bus])) if isapprox(v, 1, atol=1e-9)]
+            println("Applied_conf: $applied_conf")
+        end
+        g_result, openings_result = add_subBus(g, applied_conf, openings)
+        retrieve_flows!(g_result, model, n_case(r))
+        # dc_flow!(g_result, outages=[openings_result])
+        draw(g_result, fig=fig[1, 2], outages=openings_result, layout=layout, title="objective value:$(round(objective_value(model); digits = 5 ))")
+    else
+        @warn "NOT FEASIBLE"
+    end
+
+    display(fig)
+end
+
+function branch_status(model::Model)
+    !is_solved_and_feasible(model) && return nothing
+    value.(model[:v_branch]) .== 1
 end

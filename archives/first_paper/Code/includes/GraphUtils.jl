@@ -73,7 +73,7 @@ end
 function update_edge_ids(edge_ids::Vector{Int}, id::Int, g_orig::MetaGraph, g_modified::MetaGraph)
     function extract_to_dash(st::String)
         fl = findlast('-', st)
-        fl == nothing ? st : st[1:fl-1]
+        isnothing(fl) ? st : st[1:fl-1]
     end
 
     if id ≠ 0 
