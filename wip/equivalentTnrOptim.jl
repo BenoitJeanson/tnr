@@ -3,6 +3,16 @@ using JuMP
 include("../src/tnr.jl")
 include("equivalent.jl")
 
+function init_model(r::TNR)
+    # model = direct_model(Gurobi.Optimizer())
+    model = Model(Gurobi.Optimizer)
+    # set_silent(model)
+    set_optimizer_attribute(model, "DualReductions", 0)
+    # set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
+    model.ext[:r] = r
+    model, r
+end
+
 function init_model(g::MetaGraph,
     contingencies::AbstractArray{Int},
     n_1_connectedness::Bool,
@@ -13,14 +23,9 @@ function init_model(g::MetaGraph,
     opf::Bool,
     bus_orig::String)
 
-    # model = direct_model(Gurobi.Optimizer())
-    model = Model(Gurobi.Optimizer)
-    # set_silent(model)
-    set_optimizer_attribute(model, "DualReductions", 0)
-    # set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
-    model.ext[:r] = TNR(g, contingencies, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only, tnr_pf, opf, bus_orig)
+    r = TNR(g, contingencies, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only, tnr_pf, opf, bus_orig)
 
-    model, model.ext[:r]
+    init_model(r)
 end
 
 function create_variables!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[])
@@ -262,18 +267,27 @@ function c_w!(m::Model, r::TNR)
     end
 end
 
-function OTS_N_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[], e::Equivalent)
-    big_M2 = nb_buses(r) + length(e_buses)
+function OTS_N_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, e::Union{Nothing,Equivalent})
+    big_M = nb_buses(r)
     cases = r.n_1_connectedness ? cases(r) : (n_case(r):n_case(r))
 
-    !isempty(e_buses) && @variable(m, c_flows_e[cases, e_buses])
+    if !(isnothing(e))
+        big_M += length(e.buses)
+        @variable(m, c_flows_e[cases, e.buses])
+        @info "e.buses", e.buses
+        @constraint(m, [c in cases, e_bus in e.buses], m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
+        @constraint(m, [c in cases, e_bus in e.buses], -m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
+
+        #the flows of a connected component add up to the number of connected buses
+        @constraint(m, [c in cases, cc in e.cc], sum(m[:c_flows_e][c, br] for br in cc) == -length(cc))
+        # ((bus in e.buses) ? m[:c_flows_e][c, bus] : 0) == 1)
+    end
+
 
     # # c_flows are null when a line is open : c_w == 1
-    @constraint(m, [c in cases, e in edge_ids(r)], m[:c_flows][c, e] ≤ big_M2 * (1 - m[:c_w][c, e]))
-    @constraint(m, [c in cases, e in edge_ids(r)], -m[:c_flows][c, e] ≤ big_M2 * (1 - m[:c_w][c, e]))
+    @constraint(m, [c in cases, e in edge_ids(r)], m[:c_flows][c, e] ≤ big_M * (1 - m[:c_w][c, e]))
+    @constraint(m, [c in cases, e in edge_ids(r)], -m[:c_flows][c, e] ≤ big_M * (1 - m[:c_w][c, e]))
 
-    @constraint(m, [c in cases, e_bus in e_buses], m[:c_flows_e][c, e_bus] ≤ big_M2 * (1 - m[:v_branch_e][c, e_bus]))
-    @constraint(m, [c in cases, e_bus in e_buses], -m[:c_flows_e][c, e_bus] ≤ big_M2 * (1 - m[:v_branch_e][c, e_bus]))
 
 
     # # the first bus holds a generator with n_bus_tot - 1 - its number of possible confs,
@@ -283,18 +297,14 @@ function OTS_N_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[], 
     #     (bus == 1 ? -nb_buses(r) : 0) + 1 - sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) == 0)
     @constraint(m, [c in cases, bus in buses(r); !(bus in fixed_buses)],
         sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) +
-        ((bus in e_buses) ? m[:c_flows_e][c, bus] : 0) == 1)
+        (isnothing(e) ? 0 : ((bus in e.buses) ? m[:c_flows_e][c, bus] : 0)) == 1)
 
-    nb_e_buses = length(e_buses)
-    @variable(m, c_flows_in_e[c in cases, e_bus_s in 1:nb_e_buses, e_bus_d in (e_bus_s+1):nb_e_buses])
-    @constraint(m, [c in cases, e_bus in e_buses],
-        sum(m[:c_flows_in_e][c, br] * r.A[br, bus] for br in edge_ids(r)) +
-        ((bus in e_buses) ? m[:c_flows_e][c, bus] : 0) == 1)
 
     @variable(m, slack_c[bus in fixed_buses]) #TODO: to move to create_variable
     @constraint(m, [c in cases, bus in fixed_buses],
         sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) == m[:slack_c][bus])
-    @constraint(m, sum(m[:slack_c][bus] for bus in fixed_buses) == length(fixed_buses) - nb_buses(r))
+    @constraint(m, sum(m[:slack_c][bus] for bus in fixed_buses) ==
+                   length(fixed_buses) - nb_buses(r) - (isnothing(e) ? 0 : length(e.buses)))
 end
 
 function TNR_N_connectedness!(m::Model, r::TNR)
@@ -322,7 +332,7 @@ function TNR_N_connectedness!(m::Model, r::TNR)
     end
 end
 
-function OTS_N_1_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, e::Equivalent)
+function OTS_N_1_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, e::Union{Nothing,Equivalent})
     @info "Fixed buses are: $fixed_buses"
     bigM_nb_v = nb_buses(r) + 2
 
@@ -630,7 +640,7 @@ function secured_dc_OTS(g::MetaGraph;
     allow_branch_openings::Bool=true,
     OTS_only::Bool=false,
     tnr_pf::TNR_PF_TYPE=tnr_pf_phase,
-    opf::Bool,
+    opf::Bool=false,
     bus_orig::String,
     fixed_buses::Union{Vector{String},Vector{Int}}=Int[],
     fixed_phases::Vector{Float64}=Float64[],

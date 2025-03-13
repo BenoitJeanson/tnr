@@ -40,6 +40,7 @@ function subgraph(g::MetaGraph, buses_branches::Union{Dict{Int,Vector{Int}},Dict
         end
     end
 
+    @info "type of buses_branches", typeof(buses_branches)
     _buses_branches = isa(buses_branches, Dict{Int,Vector{Int}}) ?
                       buses_branches :
                       to_code(g, buses_branches)
@@ -150,7 +151,6 @@ function surrogate_parameters(
     cc_orig = connected_components(orig_outages)
     @info "cc_orig", cc_orig
     cc = [Int[convert_id(orig, host, bus) for bus in _buses_in_orig if bus in c] for c in cc_orig]
-
 
     Equivalent(_bus_labels, _buses_in_host, injections, B, cc)
 end

@@ -3,9 +3,6 @@ include("playUtils.jl")
 include("equivalentTnrOptim.jl")
 include("../src/tnr.jl")
 
-# g, bus_confs, coord = create_mini_case();
-# h = subgraph(g, Dict(2 => [1, 4], 4 => [2, 4]))
-
 labs = collect('A':'Z')
 contingencies = 1:20
 trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8] # used for griddraw
@@ -45,14 +42,9 @@ draw_TNR_result(g, model, r, coord=coord)
 model, r = secured_dc_OTS(sub,
     contingencies=1:ne(sub),
     OTS_only=true,
-    bus_confs=bus_confs,
-    allow_branch_openings=true,
-    tnr_pf=tnr_pf_phase,
-    opf=false,
     bus_orig=bus_orig,
-    fixed_buses=fixed_bus,
-    fixed_phases=extract_export_phases(g, ϕ_base, fixed_bus),
-    # branch_status = convert_edgeids(result_g, g, h)
+    # fixed_buses=fixed_bus,
+    # fixed_phases=extract_export_phases(g, ϕ_base, fixed_bus),
 )
 
 
@@ -68,15 +60,13 @@ equivalent = surrogate_parameters(sub, remaining, ["D", "E"], outages=[("J", "K"
 
 
 model, r = secured_dc_OTS(remaining,
-    contingencies=1:ne(remaining),
-    OTS_only=true,
-    bus_confs=bus_confs,
-    allow_branch_openings=true,
-    tnr_pf=tnr_pf_phase,
-    opf=false,
+# contingencies=1:ne(remaining),
+contingencies=Int[],
+OTS_only=true,
     bus_orig="A",
     # fixed_buses=fixed_bus,
     # fixed_phases=extract_export_phases(g, ϕ_base, fixed_bus),
     # branch_status = convert_edgeids(result_g, g, h)
     equivalent=equivalent
 );
+

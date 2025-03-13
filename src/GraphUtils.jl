@@ -52,7 +52,7 @@ function e_code_for(g::MetaGraph, edges::AbstractArray{Tuple{String,String}})
     [e_code_for(g, e...) for e in edges]
 end
 
-function to_label(g::MetaGraph, buses_branches::Dict{Int,AbstractArray{Int}})
+function to_label(g::MetaGraph, buses_branches::Dict{Int,<:AbstractArray{Int}})
     dlab = Dict{String,Vector{Tuple{String,String}}}()
     for bus in keys(buses_branches)
         dlab[label_for(g, bus)] = [e_label_for(g, e) for e in buses_branches[bus]]
@@ -60,7 +60,7 @@ function to_label(g::MetaGraph, buses_branches::Dict{Int,AbstractArray{Int}})
     dlab
 end
 
-function to_code(g::MetaGraph, buses_branches::Dict{String,AbstractArray{Tuple{String,String}}})
+function to_code(g::MetaGraph, buses_branches::Dict{String, <:AbstractArray{Tuple{String,String}}})
     dcode = Dict{Int,Vector{Int}}()
     for bus in keys(buses_branches)
         dcode[code_for(g, bus)] = [e_code_for(g, e[1], e[2]) for e in buses_branches[bus]]
