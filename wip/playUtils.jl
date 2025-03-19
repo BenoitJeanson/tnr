@@ -116,7 +116,7 @@ end
 function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="", kwargs...)
     bus_orig = isnothing(bus_orig) ? label_for(g, 1) : bus_orig
     thetrip = isa(trip, Tuple) ? e_code_for(g, trip...) : trip
-    g_cc = connected(g, bus_orig, outages=outages, trip=thetrip)
+    g_cc = connected(g, bus_orig; outages=outages, trip=thetrip)
 
     if nv(g) == nv(g_cc)
         h = g
@@ -136,18 +136,20 @@ function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="",
         ; kwargs...)
 end
 
-function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[]; kwargs...)
+function griddraw(g, bus_orig::String, trips::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}, outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[]; kwargs...)
+    _trips = isa(trips, AbstractArray{Tuple{String,String}}) ? e_code_for(g, trips) : trips
+    _outages = isa(outages, AbstractArray{Tuple{String,String}}) ? e_code_for(g, outages) : outages
     fig = Figure(size=(600, 500), fontsize=20)
     splitlength = 5
     all_edges = collect(edges(g))
-    for (i, trip) in enumerate(trips)
+    for (i, trip) in enumerate(_trips)
         e = all_edges[trip]
         label = "$(label_for(g, src(e)))$(label_for(g, dst(e)))"
 
-        if !(trip in outages)
+        if !(trip in _outages)
             draw(
                 g;
-                outages=outages,
+                outages=_outages,
                 trip=trip,
                 fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
                 node_labels=nothing,
@@ -162,7 +164,7 @@ function griddraw(g, bus_orig::String, trips::AbstractArray{Int}, outages=Int[];
             calcanddraw(
                 g;
                 bus_orig=bus_orig,
-                outages=outages,
+                outages=_outages,
                 trip=trip,
                 fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
                 node_labels=nothing,
@@ -184,7 +186,7 @@ function c_model_to_graph(g, model, orig_bus)
         return
     else
         h = deepcopy(g)
-        openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
+        _openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
         _edges = collect(edges(h))
         for (i, f) in enumerate(value.(model[:c_flows]))
             br = e_index_for(h, _edges[i])
@@ -210,6 +212,10 @@ function retrieve_flows!(g::MetaGraph, model::Model, case::Int)
     end
 end
 
+function openings(model::Model)
+    [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
+end
+
 function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_phases=nothing)
     fig = Figure(size=(1500, 1600), fontsize=20)
 
@@ -223,7 +229,7 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
     layout = isa(coord, Dict{String,Point2}) ? coord : Stress(Ptype=Float32)
     draw(g_base, fig=fig[1, 1], layout=layout, title="$(r.tnr_pf)")
 
-    openings = Int[]
+    _openings = Int[]
     applied_conf = BusConf[]
 
     display(solution_summary(model))
@@ -233,9 +239,9 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
         value(model[:overload]) > 0 && @info "Overload: $(value(model[:overload]))"
 
         if r.allow_branch_openings || r.OTS_only
-            openings = [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
-            println("Open: $openings")
-            println([collect(edge_labels(g))[i] for i in openings])
+            _openings = openings(model)
+            println("Open: $_openings")
+            println([collect(edge_labels(g))[i] for i in _openings])
         end
 
         if r.bus_confs ≠ BusConf[] && !r.OTS_only
@@ -243,7 +249,7 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
             applied_conf = BusConf[r.bus_confs[i] for (i, v) in enumerate(value.(model[:v_bus])) if isapprox(v, 1, atol=1e-9)]
             println("Applied_conf: $applied_conf")
         end
-        g_result, openings_result = add_subBus(g, applied_conf, openings)
+        g_result, openings_result = add_subBus(g, applied_conf, _openings)
         retrieve_flows!(g_result, model, n_case(r))
         # dc_flow!(g_result, outages=[openings_result])
         draw(g_result, fig=fig[1, 2], outages=openings_result, layout=layout, title="objective value:$(round(objective_value(model); digits = 5 ))")
@@ -254,7 +260,69 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
     display(fig)
 end
 
+function draw_model_case(g::MetaGraph, model::Model, case::Int; kwargs...)
+    h = copy(g)
+    retrieve_flows!(h, model, case)
+    draw(h; kwargs...)
+end
+
 function branch_status(model::Model)
     !is_solved_and_feasible(model) && return nothing
     value.(model[:v_branch]) .== 1
+end
+
+function display_bus_and_edge_labels(g::MetaGraph)
+    println("Bus Labels:")
+    for v in 1:nv(g)
+        println(v, ":", label_for(g, v))
+    end
+    println("\nEdge Labels:")
+    for v in 1:ne(g)
+        println(v, ":", e_label_for(g, v))
+    end
+end
+
+function display_all_values(model::Model)
+    for v in all_variables(model)
+        println("$v: $(value(v))")
+    end
+end
+
+
+function sandbox(r, equivalent)
+    m, r = init_model(r)
+    _fixed_buses = Int[r.bus_orig_id]
+    _fixed_phases = Float64[0.0]
+    create_variables!(m, r, _fixed_buses, equivalent)
+    c_w!(m, r)
+
+    OTS_flows_phases!(m, r, _fixed_buses, _fixed_phases, equivalent)
+    OTS_N_connectedness!(m, r, _fixed_buses, equivalent)
+
+    OTS_N_1_connectedness!(m, r, _fixed_buses, equivalent)
+
+    N_balance!(m, r, _fixed_buses, equivalent)
+    OTS_balance!(m, r, _fixed_buses, equivalent)
+
+    loadloss!(m, r, _fixed_buses, equivalent)
+
+    overload!(m, r)
+
+    # branch_status!(m, branch_status)
+
+    @objective(m, Min,
+        sum(m[:lostload][c] for c in n_1cases(r)))
+
+
+    # @constraint(m, m[:v_branch_e][2] == 1)
+    # @constraint(m, m[:v_branch][3] == 1)
+
+
+    optimize!(m)
+    if is_solved_and_feasible(m)
+        @info "Model OK"
+    else
+        @warn "Model Infeasible"
+    end
+    m, r
 end

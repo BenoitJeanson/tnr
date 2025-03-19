@@ -340,6 +340,8 @@ function connected(g::MetaGraph, bus_origin::String; outages=Int[], trip=nothing
     g_result = copy(g)
 
     openbranches = copy(outages)
+    @info "openbranches", openbranches
+    @info "trip", trip
     if !isnothing(trip)
         push!(openbranches, trip)
     end

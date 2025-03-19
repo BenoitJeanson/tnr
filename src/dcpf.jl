@@ -2,6 +2,9 @@ using Logging
 using SparseArrays
 using MetaGraphsNext
 using JuMP
+using Gurobi
+
+include("../wip/Equivalent.jl")
 
 @enum DCPF_Type pf_linalg pf_optim
 
@@ -61,25 +64,46 @@ function dc_flow_linalg(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64
 end
 
 
-function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64}; kwargs...)
-    nb_buses, nb_edges = size(A)
+function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64};
+    slack::Union{Nothing,Int}=nothing,
+    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
+    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    equivalent::Union{Nothing,Equivalent}=nothing)
 
+    nb_buses, nb_edges = size(A)
     model = Model(Gurobi.Optimizer)
     set_silent(model)
     @variable(model, ϕ[1:nb_buses])
     @variable(model, flows[1:nb_edges])
 
-    (_fixed_buses, _fixed_phases) = haskey(kwargs, :fixed_buses) && haskey(kwargs, :fixed_phases) ?
-                                  (kwargs[:fixed_buses], kwargs[:fixed_phases]) :
-                                  ([get(kwargs, :slack, findmin(P)[2])], [0.])
-    # slack = get(kwargs, :slack, findmin(P)[2])
+    (_fixed_buses, _fixed_phases) = !isnothing(fixed_buses) && !isnothing(fixed_phases) ?
+                                    (fixed_buses, fixed_phases) :
+                                    ([isnothing(slack) ? findmin(P)[2] : slack], [0.0])
 
     @constraint(model, [f_bus_id in 1:length(_fixed_buses)], ϕ[_fixed_buses[f_bus_id]] == _fixed_phases[f_bus_id])
-    @constraint(model, [bus in 1:nb_buses; !(bus in _fixed_buses)], P[bus] == sum(A[bus, e] * flows[e] for e in 1:nb_edges))
-
     @constraint(model, [edge in 1:nb_edges], flows[edge] == sum(B[edge] * A[bus, edge] * ϕ[bus] for bus in 1:nb_buses))
-    optimize!(model);
 
+    if isnothing(equivalent)
+        @constraint(model, [bus in 1:nb_buses; !(bus in _fixed_buses)],
+            P[bus] ==
+            sum(A[bus, e] * flows[e] for e in 1:nb_edges))
+    else
+        @variable(model, flows_e[equivalent.buses])
+        @constraint(model, [bus in 1:nb_buses; !(bus in _fixed_buses)],
+            P[bus] ==
+            sum(A[bus, e] * flows[e] for e in 1:nb_edges) -
+            (bus in equivalent.buses ? flows_e[bus] : 0))
+        @constraint(model, [e_bus_id in 1:length(equivalent.buses)],
+            flows_e[equivalent.buses[e_bus_id]] ==
+            equivalent.p[e_bus_id] +
+            sum(equivalent.B[e_bus_id, other_id] * ϕ[other_bus] for (other_id, other_bus) in enumerate(equivalent.buses)))
+        @constraint(model, [cc in equivalent.cc],
+            sum(flows_e[bus] for bus in cc.buses) ==
+            sum(equivalent.p[i] for (i, bus) in enumerate(equivalent.buses) if bus in cc.buses))
+    end
+
+    optimize!(model)
+    
     if is_solved_and_feasible(model)
         slack_injections = [-sum(A[bus, e] * value(model[:flows][e]) for e in 1:nb_edges) for bus in _fixed_buses]
         return value.(model[:flows]), value.(model[:ϕ]), slack_injections
@@ -89,7 +113,28 @@ function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64}
     end
 end
 
-function dc_flow_optim(g::MetaGraph; outages=Int[], trip=nothing, kwargs...)
+function dc_flow_optim(
+    g::MetaGraph;
+    outages=Int[],
+    trip=nothing,
+    slack::Union{Nothing,Int}=nothing,
+    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
+    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    equivalent::Union{Nothing,Equivalent}=nothing)
+
     A, B, P = _graph_to_mat(g, outages=outages, trip=trip)
-    dc_flow_optim(A, B, P; kwargs...)
+    dc_flow_optim(A, B, P; slack, fixed_buses, fixed_phases, equivalent)
+end
+
+function dc_flow_optim!(
+    g::MetaGraph;
+    outages=Int[],
+    trip=nothing,
+    slack::Union{Nothing,Int}=nothing,
+    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
+    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    equivalent::Union{Nothing,Equivalent}=nothing)
+    flows, ϕ, slack_injections = dc_flow_optim(g; outages, trip, slack, fixed_buses, fixed_phases,equivalent)
+    setflows!(g, flows)
+    flows, ϕ, slack_injections
 end
