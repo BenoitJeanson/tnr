@@ -24,6 +24,7 @@ Branch(b, p_max) = Branch(b, p_max, 0, 0, 0, false, false)
 Branch(b, p_max, v_nom1, v_nom2) = Branch(b, p_max, v_nom1, v_nom2, 0, false, false)
 Branch(b::Branch) = Branch(b.b, b.p_max, b.v_nom1, b.v_nom2, b.p, false, false)
 Branch(b::Branch, p_max) = Branch(b.b, p_max, b.v_nom1, b.v_nom2, b.p, false, false)
+Branch() = Branch(0, 0, 0, 0, 0, false, false)
 
 struct BranchId
     bus1::Int
@@ -40,6 +41,8 @@ mutable struct BusConf
     subBuses::Vector{SubBus}
 end
 
+const ELabel = Tuple{String,String}
+const VLabel = String
 
 e_label_for(g::MetaGraph, i::Int) = g[].edges[i]
 e_code_for(g::MetaGraph, a::String, b::String) = g[].edges((a, b))
@@ -48,19 +51,19 @@ function e_label_for(g::MetaGraph, edge_ids::AbstractArray{Int})
     [e_label_for(g, i) for i in edge_ids]
 end
 
-function e_code_for(g::MetaGraph, edges::AbstractArray{Tuple{String,String}})
+function e_code_for(g::MetaGraph, edges::AbstractArray{ELabel})
     [e_code_for(g, e...) for e in edges]
 end
 
 function to_label(g::MetaGraph, buses_branches::Dict{Int,<:AbstractArray{Int}})
-    dlab = Dict{String,Vector{Tuple{String,String}}}()
+    dlab = Dict{String,Vector{ELabel}}()
     for bus in keys(buses_branches)
         dlab[label_for(g, bus)] = [e_label_for(g, e) for e in buses_branches[bus]]
     end
     dlab
 end
 
-function to_code(g::MetaGraph, buses_branches::Dict{String, <:AbstractArray{Tuple{String,String}}})
+function to_code(g::MetaGraph, buses_branches::Dict{String,<:AbstractArray{ELabel}})
     dcode = Dict{Int,Vector{Int}}()
     for bus in keys(buses_branches)
         dcode[code_for(g, bus)] = [e_code_for(g, e[1], e[2]) for e in buses_branches[bus]]
@@ -86,7 +89,7 @@ function add_subBus(g::MetaGraph, busconfs::Vector{BusConf})
     e_labels = collect(edge_labels(h))
     edges_origin = collect(edges(h))
 
-    edges_to_change = Dict{Int,Tuple{String,String}}()
+    edges_to_change = Dict{Int,ELabel}()
 
     for bc in busconfs
         bus_label = label_for(g, bc.bus)
@@ -164,7 +167,7 @@ function _initgraph()
         vertex_data_type=Float64,
         edge_data_type=Branch,
         graph_data=(
-            edges=Bijection{Int,Tuple{String,String}}(),)
+            edges=Bijection{Int,ELabel}(),)
     )
 end
 
@@ -317,7 +320,7 @@ set_limitations(branches, lim) = Dict(k => begin
 end for (k, br_in) in branches)
 
 
-function connected(g::MetaGraph, bus_origin::String; outages=Int[], trip=nothing)
+function connected(g::MetaGraph, bus_origin::String; outages::AbstractArray{Int}=Int[], trip::Union{Nothing,Int}=nothing, eq::Union{Nothing,Equivalent}=nothing)
 
     """
     _extractsubgraph is embedded as it only applies if the bus_labels are the labels of buses belonging to a single connected component 
@@ -340,8 +343,6 @@ function connected(g::MetaGraph, bus_origin::String; outages=Int[], trip=nothing
     g_result = copy(g)
 
     openbranches = copy(outages)
-    @info "openbranches", openbranches
-    @info "trip", trip
     if !isnothing(trip)
         push!(openbranches, trip)
     end
@@ -350,7 +351,24 @@ function connected(g::MetaGraph, bus_origin::String; outages=Int[], trip=nothing
         rem_edge!(g_result, src(e), dst(e))
     end
 
+    # create virtual edges that will be removed after the connected components calculation
+    eq_edges = ELabel[]
+    if !isnothing(eq)
+        for cc in eq.cc
+            cclab = to_label(g, cc.buses)
+            for i in eachindex(cclab), j in i+1:length(cclab)
+                elabs = (cclab[i], cclab[j])
+                if !haskey(g_result, elabs...)
+                    g_result[elabs...] = Branch()
+                    push!(eq_edges, elabs)
+                end
+            end
+        end
+    end
+    @info "created virtual edges", eq_edges
+
     ccs = connected_components(g_result)
+    foreach(elab -> delete!(g_result, elab...), eq_edges)
     cc = ccs[findfirst(cc -> bus_origin in [label_for(g_result, v) for v in cc], ccs)]
     _extractsubgraph(g_result, [label_for(g_result, v) for v in cc])
 end

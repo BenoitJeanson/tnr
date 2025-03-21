@@ -66,18 +66,24 @@ function equivalent_parameters(
     host::MetaGraph,
     buses::Union{AbstractArray{Int},AbstractArray{String}},
     include_branches_limites::Bool;
-    outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[],)
+    outages::Union{AbstractArray{Int},AbstractArray{ELabel}}=Int[],)
 
     _buses_in_orig = isa(buses, AbstractArray{String}) ? to_code(orig, buses) : buses
     _bus_labels = isa(buses, AbstractArray{Int}) ? to_label(orig, buses) : buses
     _buses_in_host = to_code(host, _bus_labels)
-    _outages_ids = isa(outages, AbstractArray{Tuple{String,String}}) ?
+    _outages_ids = isa(outages, AbstractArray{ELabel}) ?
                    e_code_for(orig, outages) : outages
     _outages_labels = isa(outages, AbstractArray{Int}) ?
                       e_label_for(orig, outages) : outages
 
     nb_fixed_buses = length(_buses_in_orig)
+    sloped_g = copy(orig)
+    foreach(bus -> (sloped_g[bus] *= sloped_g[bus] ≥ 0 ? 1 : 2), labels(sloped_g))
+    _, _, stressed_gen = dc_flow_optim(sloped_g; outages=_outages_ids, fixed_buses=_buses_in_orig, fixed_phases=zeros(Float64, nb_fixed_buses))
     flows, _, injections = dc_flow_optim(orig; outages=_outages_ids, fixed_buses=_buses_in_orig, fixed_phases=zeros(Float64, nb_fixed_buses))
+    @info "stressed_gen", stressed_gen
+    @info "injections", injections
+    gen_slope = stressed_gen .- injections
     B = zeros(Float64, nb_fixed_buses, nb_fixed_buses)
     F = zeros(Float64, ne(orig), nb_fixed_buses)
     for i in 1:nb_fixed_buses
@@ -99,9 +105,9 @@ function equivalent_parameters(
     end
     f_max = [orig[e...].p_max for e in edge_labels(orig)]
     if include_branches_limites
-        return Equivalent(_bus_labels, _buses_in_host, injections, B, ccs, flows, f_max, F)
+        return Equivalent(_bus_labels, _buses_in_host, injections, gen_slope, B, ccs, flows, f_max, F)
     else
-        return Equivalent(_bus_labels, _buses_in_host, injections, B, ccs)
+        return Equivalent(_bus_labels, _buses_in_host, injections, gen_slope, B, ccs)
     end
 end
 

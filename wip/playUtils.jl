@@ -113,15 +113,19 @@ function showallvalues(model)
     foreach(k -> println("$k: $(value(k))"), all_variables(model))
 end
 
-function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="", kwargs...)
+function calcanddraw(g; bus_orig=nothing,
+    outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[], trip::Union{Nothing,Int,Tuple{String,String}}=nothing,
+    label="", eq=nothing, kwargs...)
+    _outages = outages isa AbstractArray{Tuple{String,String}} ? e_code_for(g, outages) : outages
+
     bus_orig = isnothing(bus_orig) ? label_for(g, 1) : bus_orig
-    thetrip = isa(trip, Tuple) ? e_code_for(g, trip...) : trip
-    g_cc = connected(g, bus_orig; outages=outages, trip=thetrip)
+    _trip = trip isa Tuple{String,String} ? e_code_for(g, trip...) : trip
+    g_cc = connected(g, bus_orig; outages=_outages, trip=_trip, eq=eq)
 
     if nv(g) == nv(g_cc)
         h = g
-        houtages = outages
-        htrip = thetrip
+        houtages = _outages
+        htrip = _trip
     else
         h = g_cc
         balance!(h)
@@ -129,14 +133,14 @@ function calcanddraw(g; bus_orig=nothing, outages=Int[], trip=nothing, label="",
         htrip = nothing
         label = label == "" ? "" : L"\textbf{%$label}(%$(round(Int, 100*(total_load(g)-total_load(g_cc)))))"
     end
-
-    dc_draw = dc_flow(h, outages=houtages, trip=htrip, pf_type=pf_linalg)
+    dc_draw = copy(h)
+    dc_flow_optim!(dc_draw; outages=houtages, trip=htrip, equivalent=eq)
     draw(dc_draw, outages=houtages, trip=htrip, title=label,
         edge_width=br -> br.outage || br.trip ? 6 : 2,
         ; kwargs...)
 end
 
-function griddraw(g, bus_orig::String, trips::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}, outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[]; kwargs...)
+function griddraw(g, bus_orig::String, trips::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}, outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[], eq=nothing; kwargs...)
     _trips = isa(trips, AbstractArray{Tuple{String,String}}) ? e_code_for(g, trips) : trips
     _outages = isa(outages, AbstractArray{Tuple{String,String}}) ? e_code_for(g, outages) : outages
     fig = Figure(size=(600, 500), fontsize=20)
@@ -213,18 +217,20 @@ function retrieve_flows!(g::MetaGraph, model::Model, case::Int)
 end
 
 function openings(model::Model)
-    [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1]
+    is_solved_and_feasible(model) ?
+    [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1] :
+    Int[]
 end
 
-function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_phases=nothing)
-    fig = Figure(size=(1500, 1600), fontsize=20)
+function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_phases=nothing, eq::Union{Equivalent,Nothing}=nothing)
+    fig = Figure(size=(1500, 800), fontsize=20)
 
     if isnothing(fixed_buses)
-        g_base = dc_flow(g)
+        g_base = dc_flow(g, equivalent=eq)
     else
         g_base = dc_flow(g;
             fixed_buses=isa(fixed_buses, AbstractArray{Int}) ? fixed_buses : to_code(g, fixed_buses),
-            fixed_phases=fixed_phases)
+            fixed_phases=fixed_phases, equivalent=eq)
     end
     layout = isa(coord, Dict{String,Point2}) ? coord : Stress(Ptype=Float32)
     draw(g_base, fig=fig[1, 1], layout=layout, title="$(r.tnr_pf)")
@@ -288,13 +294,13 @@ function display_all_values(model::Model)
     end
 end
 
-
 function sandbox(r, equivalent)
     m, r = init_model(r)
     _fixed_buses = Int[r.bus_orig_id]
     _fixed_phases = Float64[0.0]
     create_variables!(m, r, _fixed_buses, equivalent)
     c_w!(m, r)
+    # @constraint(m, [c in cases(r)], m[:c_w][c,:] .== 0)
 
     OTS_flows_phases!(m, r, _fixed_buses, _fixed_phases, equivalent)
     OTS_N_connectedness!(m, r, _fixed_buses, equivalent)
@@ -306,9 +312,9 @@ function sandbox(r, equivalent)
 
     loadloss!(m, r, _fixed_buses, equivalent)
 
-    overload!(m, r)
+    overload!(m, r, equivalent)
 
-    # branch_status!(m, branch_status)
+    # # branch_status!(m, branch_status)
 
     @objective(m, Min,
         sum(m[:lostload][c] for c in n_1cases(r)))

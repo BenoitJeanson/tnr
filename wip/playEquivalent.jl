@@ -8,7 +8,7 @@ include("../src/tnr.jl")
 labs = collect('A':'Z')
 contingencies = 1:20
 trips = [2, 5, 4, 16, 10, 3, 6, 11, 19, 20, 1, 14, 15, 13, 12, 17, 18, 7, 9, 8] # used for griddraw
-bus_orig="A"
+bus_orig = "A"
 if !@isdefined g
     g, bus_confs, coord = create_case("case14", num -> "$(labs[num])")
 end
@@ -38,8 +38,8 @@ model_sub, r_sub = secured_dc_OTS(sub,
     fixed_phases=extract_export_phases(g, ϕ_base, fixed_buses),
 );
 
-eq_outage = equivalent_parameters(sub, remaining, fixed_buses, outages=[("F", "K"), ("I", "N"), ("G", "I")])
-eq_loop = equivalent_parameters(sub, remaining, fixed_buses)
+eq_outage = equivalent_parameters(sub, remaining, fixed_buses, false, outages=[("F", "K"), ("I", "N"), ("G", "I")])
+eq_loop = equivalent_parameters(sub, remaining, fixed_buses, false)
 
 r = TNR(
     remaining,
@@ -70,7 +70,7 @@ function sandbox(r, equivalent)
 
     loadloss!(m, r, _fixed_buses, equivalent)
 
-    overload!(m, r)
+    overload!(m, r, equivalent)
 
     # branch_status!(m, branch_status)
 

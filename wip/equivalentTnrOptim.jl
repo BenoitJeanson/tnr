@@ -8,7 +8,12 @@ function init_model(r::TNR)
     model = Model(Gurobi.Optimizer)
     # set_silent(model)
     set_optimizer_attribute(model, "DualReductions", 0)
-    # set_optimizer_attribute(model, "LogFile", joinpath("_research", "tmp", "my_log_file.txt"))
+    log_path = joinpath("tmp", "my_log_file.txt")
+    open(log_path, "a") do f
+        write(f, "________________________________________________________________\n")
+        write(f, string(r), "\n")
+    end
+    set_optimizer_attribute(model, "LogFile", log_path)
     model.ext[:r] = r
     model, r
 end
@@ -34,11 +39,11 @@ function create_variables!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[], eq:
     @variable(m, flows[cases(r), edge_ids(r)])
     @variable(m, overload)
 
-    @variable(m, gen[cases(r), bus in 1:nb_buses(r); !(bus in fixed_buses)] ≥ 0) #TODO : change 1:nv(g)...
-    @variable(m, load[cases(r), bus in 1:nb_buses(r); !(bus in fixed_buses)] ≥ 0)
+    @variable(m, gen[cases(r), bus in buses(r); !(bus in fixed_buses)] ≥ 0)
+    @variable(m, load[cases(r), bus in buses(r); !(bus in fixed_buses)] ≥ 0)
     @variable(m, lostload[n_1cases(r)])
-
-    @variable(m, c_slacks[bus in fixed_buses])
+    
+    @variable(m, c_slacks[bus in (isempty(fixed_buses) ? Int[r.bus_orig_id] : fixed_buses)])
     @variable(m, c_flows[(r.n_1_connectedness ? 1 : nb_cases(r)):nb_cases(r), edge_ids(r)])
 
     @variable(m, cn1_flows[n_1cases(r), edge_ids(r)])
@@ -46,10 +51,13 @@ function create_variables!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[], eq:
     @variable(m, cn1_ψ[n_1cases(r), bus in buses(r), incident(r, bus)], Bin)
 
     if !isnothing(eq)
-        @variable(m, ϕ_e[cases(r), eq.buses])
         @variable(m, flows_e[cases(r), eq.buses])
-        @variable(m, v_branch_e[eq.buses], Bin)
-
+        if eq.allow_connector_opening
+            @variable(m, ϕ_e[cases(r), eq.buses])
+            @variable(m, v_branch_e[eq.buses], Bin)
+            @variable(m, cn1_ψ_e_bus[n_1cases(r), e_bus in eq.buses], Bin)
+            @variable(m, cn1_ψ_e_cc[n_1cases(r), e_cc in 1:length(eq.cc), eq.cc[e_cc].buses], Bin)
+        end
         @variable(m, p_e[cases(r), eq.buses])
         @variable(m, l_cc[n_1cases(r), 1:length(eq.cc)])
 
@@ -58,8 +66,6 @@ function create_variables!(m::Model, r::TNR, fixed_buses::Vector{Int}=Int[], eq:
 
         @variable(m, cn1_flows_e[n_1cases(r), eq.buses])
         @variable(m, cn1_π_e_cc[n_1cases(r), 1:length(eq.cc)], Bin)
-        @variable(m, cn1_ψ_e_bus[n_1cases(r), e_bus in eq.buses], Bin)
-        @variable(m, cn1_ψ_e_cc[n_1cases(r), e_cc in 1:length(eq.cc), eq.cc[e_cc].buses], Bin)
     end
 
     if r.allow_branch_openings || r.OTS_only
@@ -110,14 +116,7 @@ function OTS_flows_phases!(m::Model, r::TNR, fixed_buses::Vector{Int}, fixed_ϕ:
     big_M = 100 #TODO: to change  
     @info "HARDCODED OTS_flows_phases bigM to $big_M"
 
-    nb_fixed = length(fixed_buses)
-    if isempty(fixed_buses)
-        _fixed_buses, _fixed_ϕ = [r.bus_orig_id], [0.0]
-    else
-        _fixed_buses, _fixed_ϕ = fixed_buses, fixed_ϕ
-    end
-
-    @constraint(m, [c in cases(r), f_bus in 1:nb_fixed], m[:ϕ][c, _fixed_buses[f_bus]] == _fixed_ϕ[f_bus])
+    @constraint(m, [c in cases(r), (i, f_bus) in enumerate(fixed_buses)], m[:ϕ][c, f_bus] == fixed_ϕ[i])
 
     @constraint(m, [c in cases(r)], m[:flows][c, :] .≤ (1 .- m[:c_w][c, :]) .* big_M)
     @constraint(m, [c in cases(r)], -m[:flows][c, :] .≤ (1 .- m[:c_w][c, :]) .* big_M)
@@ -130,28 +129,36 @@ function OTS_flows_phases!(m::Model, r::TNR, fixed_buses::Vector{Int}, fixed_ϕ:
         m[:flows][c, edge] - sum(B[edge] * r.A'[bus, edge] * m[:ϕ][c, bus] for bus in buses(r)) ≥ -big_M * m[:c_w][c, edge])
 
     if isnothing(eq)
-        @constraint(m, [c in cases(r), bus in buses(r); !(bus in _fixed_buses)],
+        @constraint(m, [c in cases(r), bus in buses(r); !(bus in fixed_buses)],
             m[:load][c, bus] - m[:gen][c, bus] ==
             sum(r.A'[bus, e] * m[:flows][c, e] for e in edge_ids(r)))
     else
-        @constraint(m, [c in cases(r), bus in buses(r); !(bus in _fixed_buses)],
+        @constraint(m, [c in cases(r), bus in buses(r); !(bus in fixed_buses)],
             m[:load][c, bus] - m[:gen][c, bus] ==
             sum(r.A'[bus, e] * m[:flows][c, e] for e in edge_ids(r)) -
             (bus in eq.buses ? m[:flows_e][c, bus] : 0))
 
-        @constraint(m, [c in cases(r), bus in eq.buses], m[:ϕ][c, bus] - m[:ϕ_e][c, bus] .≤ big_M .* m[:v_branch_e][bus])
-        @constraint(m, [c in cases(r), bus in eq.buses], m[:ϕ][c, bus] - m[:ϕ_e][c, bus] .≥ -big_M .* m[:v_branch_e][bus])
-        @constraint(m, [c in cases(r), bus in eq.buses], m[:flows_e][c, bus] ≤ (1 - m[:v_branch_e][bus]) * big_M)
-        @constraint(m, [c in cases(r), bus in eq.buses], m[:flows_e][c, bus] ≥ -(1 - m[:v_branch_e][bus]) * big_M)
-        for (bus_id, bus) in enumerate(eq.buses)
-            @constraint(m, [c in cases(r)],
-                (m[:flows_e][c, bus] - m[:p_e][c, bus] -
-                 sum(eq.B[bus_id, bus_ϕ_id] * m[:ϕ_e][c, bus_ϕ] for (bus_ϕ_id, bus_ϕ) in enumerate(eq.buses))) ≤
-                m[:v_branch_e][bus] * big_M)
-            @constraint(m, [c in cases(r)],
-                (m[:flows_e][c, bus] - m[:p_e][c, bus] -
-                 sum(eq.B[bus_id, bus_ϕ_id] * m[:ϕ_e][c, bus_ϕ] for (bus_ϕ_id, bus_ϕ) in enumerate(eq.buses))) ≥
-                -m[:v_branch_e][bus] * big_M)
+        if eq.allow_connector_opening
+            @constraint(m, [c in cases(r), bus in eq.buses], m[:ϕ][c, bus] - m[:ϕ_e][c, bus] .≤ big_M .* m[:v_branch_e][bus])
+            @constraint(m, [c in cases(r), bus in eq.buses], m[:ϕ][c, bus] - m[:ϕ_e][c, bus] .≥ -big_M .* m[:v_branch_e][bus])
+            @constraint(m, [c in cases(r), bus in eq.buses], m[:flows_e][c, bus] ≤ (1 - m[:v_branch_e][bus]) * big_M)
+            @constraint(m, [c in cases(r), bus in eq.buses], m[:flows_e][c, bus] ≥ -(1 - m[:v_branch_e][bus]) * big_M)
+            for (bus_id, bus) in enumerate(eq.buses)
+                @constraint(m, [c in cases(r)],
+                    (m[:flows_e][c, bus] - m[:p_e][c, bus] -
+                     sum(eq.B[bus_id, bus_ϕ_id] * m[:ϕ_e][c, bus_ϕ] for (bus_ϕ_id, bus_ϕ) in enumerate(eq.buses))) ≤
+                    m[:v_branch_e][bus] * big_M)
+                @constraint(m, [c in cases(r)],
+                    (m[:flows_e][c, bus] - m[:p_e][c, bus] -
+                     sum(eq.B[bus_id, bus_ϕ_id] * m[:ϕ_e][c, bus_ϕ] for (bus_ϕ_id, bus_ϕ) in enumerate(eq.buses))) ≥
+                    -m[:v_branch_e][bus] * big_M)
+            end
+        else
+            for (bus_id, bus) in enumerate(eq.buses)
+                @constraint(m, [c in cases(r)],
+                    (m[:flows_e][c, bus] - m[:p_e][c, bus] ==
+                     sum(eq.B[bus_id, bus_ϕ_id] * m[:ϕ][c, bus_ϕ] for (bus_ϕ_id, bus_ϕ) in enumerate(eq.buses))))
+            end
         end
         @constraint(m, [c in cases(r), cc in eq.cc],
             sum(m[:flows_e][c, bus] for bus in cc.buses) ==
@@ -277,8 +284,15 @@ function overload!(m::Model, r::TNR, eq::Union{Equivalent,Nothing})
     @constraint(m, [c in cases(r)], -m[:flows][c, :] .≤ p_max)
 
     if !isnothing(eq)
-        @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≤ eq.f_max[e_id])
-        @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≥ -eq.f_max[e_id])
+        if eq.allow_connector_opening
+            @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≤ eq.f_max[e_id])
+            @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≥ -eq.f_max[e_id])
+        else
+            @constraint(m, [c in cases(r), e_id in 1:length(eq.f)],
+                eq.f[e_id] + sum(eq.F[e_id, bus_id] * m[:ϕ][c, bus] for (bus_id, bus) in enumerate(eq.buses)) ≤ eq.f_max[e_id])
+            @constraint(m, [c in cases(r), e_id in 1:length(eq.f), bus in eq.buses],
+                eq.f[e_id] + sum(eq.F[e_id, bus_id] .* m[:ϕ][c, bus] for (bus_id, bus) in enumerate(eq.buses)) ≥ -eq.f_max[e_id])
+        end
     end
 end
 
@@ -292,31 +306,36 @@ function c_w!(m::Model, r::TNR)
     end
 end
 
-function OTS_N_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, e::Union{Nothing,Equivalent})
-    big_M = nb_buses(r) + (isnothing(e) ? 0 : length(e.buses))
+function OTS_N_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, eq::Union{Nothing,Equivalent})
+    _fixed_buses = isempty(fixed_buses) ? Int[r.bus_orig_id] : fixed_buses
+    big_M = nb_buses(r) + (isnothing(eq) ? 0 : length(eq.buses))
     cases = r.n_1_connectedness ? cases(r) : (n_case(r):n_case(r))
 
     @constraint(m, [c in cases, e in edge_ids(r)], m[:c_flows][c, e] ≤ big_M * (1 - m[:c_w][c, e]))
     @constraint(m, [c in cases, e in edge_ids(r)], -m[:c_flows][c, e] ≤ big_M * (1 - m[:c_w][c, e]))
 
-    @constraint(m, [c in cases, bus in fixed_buses],
-        sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) == m[:c_slacks][bus])
-
-    if isnothing(e)
-        @constraint(m, [c in cases, bus in buses(r); !(bus in fixed_buses)],
+    if isnothing(eq)
+        @constraint(m, [c in cases, bus in buses(r); !(bus in _fixed_buses)],
             sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) == 1)
-        @constraint(m, sum(m[:c_slacks][bus] for bus in fixed_buses) == length(fixed_buses) - nb_buses(r))
+        @constraint(m, [c in cases, bus in _fixed_buses],
+            sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) == m[:c_slacks][bus])
+        @constraint(m, sum(m[:c_slacks][bus] for bus in _fixed_buses) == length(_fixed_buses) - nb_buses(r))
 
     else
-        @constraint(m, [c in cases, bus in buses(r); !(bus in fixed_buses)],
+        @constraint(m, [c in cases, bus in buses(r); !(bus in _fixed_buses)],
             sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) -
-            ((bus in e.buses) ? m[:c_flows_e][c, bus] : 0) == 1)
-        @constraint(m, sum(m[:c_slacks][bus] for bus in fixed_buses) == length(fixed_buses) - nb_buses(r) - length(e.cc))
+            ((bus in eq.buses) ? m[:c_flows_e][c, bus] : 0) == 1)
+        @constraint(m, [c in cases, bus in _fixed_buses],
+            sum(m[:c_flows][c, br] * r.A[br, bus] for br in edge_ids(r)) -
+            ((bus in eq.buses) ? m[:c_flows_e][c, bus] : 0) == m[:c_slacks][bus])
+        @constraint(m, sum(m[:c_slacks][bus] for bus in _fixed_buses) == length(_fixed_buses) - nb_buses(r) - length(eq.cc))
 
-        @constraint(m, [c in cases, e_bus in e.buses], m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
-        @constraint(m, [c in cases, e_bus in e.buses], -m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
+        if eq.allow_connector_opening
+            @constraint(m, [c in cases, e_bus in eq.buses], m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
+            @constraint(m, [c in cases, e_bus in eq.buses], -m[:c_flows_e][c, e_bus] ≤ big_M * (1 - m[:v_branch_e][e_bus]))
+        end
 
-        @constraint(m, [c in cases, cc in e.cc], sum(m[:c_flows_e][c, br] for br in cc.buses) == 1)
+        @constraint(m, [c in cases, cc in eq.cc], sum(m[:c_flows_e][c, br] for br in cc.buses) == 1)
     end
 
 end
@@ -349,69 +368,81 @@ end
 function OTS_N_1_connectedness!(m::Model, r::TNR, fixed_buses::Vector{Int}, eq::Union{Nothing,Equivalent})
     bigM_nb_v = nb_buses(r) + 2 + (isnothing(eq) ? 0 : length(eq.buses))
 
+    _fixed_buses = isempty(fixed_buses) ? Int[r.bus_orig_id] : fixed_buses
+
     # Set of constraints to ensure cn1_π is 0 in unenergized ares.
     @constraint(m, [c in n_1cases(r), e in edge_ids(r)], m[:cn1_flows][c, e] ≤ bigM_nb_v * (1 - m[:c_w][c, e]))
     @constraint(m, [c in n_1cases(r), e in edge_ids(r)], -m[:cn1_flows][c, e] ≤ bigM_nb_v * (1 - m[:c_w][c, e]))
 
     if isnothing(eq)
-        @constraint(m, [c in n_1cases(r), bus in [bus for bus in buses(r) if !(bus in fixed_buses)]],
+        @constraint(m, [c in n_1cases(r), bus in [bus for bus in buses(r) if !(bus in _fixed_buses)]],
             sum(r.A[e, bus] * m[:cn1_flows][c, e] for e in edge_ids(r)) ==
             m[:cn1_π][c, bus])
     else
-        @constraint(m, [c in n_1cases(r), bus in [bus for bus in buses(r) if !(bus in fixed_buses)]],
+        @constraint(m, [c in n_1cases(r), bus in [bus for bus in buses(r) if !(bus in _fixed_buses)]],
             sum(r.A[e, bus] * m[:cn1_flows][c, e] for e in edge_ids(r)) -
             (bus in eq.buses ? m[:cn1_flows_e][c, bus] : 0) ==
             m[:cn1_π][c, bus])
-        @constraint(m, [c in n_1cases(r), bus in eq.buses], m[:cn1_flows_e][c, bus] ≤ bigM_nb_v * (1 - m[:v_branch_e][bus]))
-        @constraint(m, [c in n_1cases(r), bus in eq.buses], -m[:cn1_flows_e][c, bus] ≤ bigM_nb_v * (1 - m[:v_branch_e][bus]))
+        if eq.allow_connector_opening
+            @constraint(m, [c in n_1cases(r), bus in eq.buses], m[:cn1_flows_e][c, bus] ≤ bigM_nb_v * (1 - m[:v_branch_e][bus]))
+            @constraint(m, [c in n_1cases(r), bus in eq.buses], -m[:cn1_flows_e][c, bus] ≤ bigM_nb_v * (1 - m[:v_branch_e][bus]))
+        end
         @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc)],
             sum(m[:cn1_flows_e][c, e] for e in eq.cc[cc_id].buses) == m[:cn1_π_e_cc][c, cc_id])
     end
 
 
     # Set of constraints to ensure cn1_π is 1 in energized ares.
-    @constraint(m, [c in n_1cases(r), fixed_bus in fixed_buses], m[:cn1_π][c, fixed_bus] == 1)
+    @constraint(m, [c in n_1cases(r), fixed_bus in _fixed_buses], m[:cn1_π][c, fixed_bus] == 1)
 
-    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in fixed_buses)],
+    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in _fixed_buses)],
         m[:cn1_π][c, bus] ≥ m[:cn1_ψ][c, bus, e])
 
-    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in fixed_buses)],
+    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in _fixed_buses)],
         m[:cn1_ψ][c, bus, e] ≥ m[:cn1_π][c, opposite(r, e, bus)] - m[:c_w][c, e])
-    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in fixed_buses)],
+    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in _fixed_buses)],
         m[:cn1_ψ][c, bus, e] ≤ m[:cn1_π][c, opposite(r, e, bus)])
-    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in fixed_buses)],
+    @constraint(m, [c in n_1cases(r), bus in buses(r), e in incident(r, bus); !(bus in _fixed_buses)],
         m[:cn1_ψ][c, bus, e] ≤ 1 - m[:c_w][c, e])
 
     if isnothing(eq)
-        @constraint(m, [c in n_1cases(r), bus in buses(r); !(bus in fixed_buses)],
+        @constraint(m, [c in n_1cases(r), bus in buses(r); !(bus in _fixed_buses)],
             m[:cn1_π][c, bus] ≤ sum(m[:cn1_ψ][c, bus, e] for e in incident(r, bus)))
     else
-        @constraint(m, [c in n_1cases(r), bus in buses(r); !(bus in fixed_buses)],
-            m[:cn1_π][c, bus] ≤
-            sum(m[:cn1_ψ][c, bus, e] for e in incident(r, bus)) +
-            (bus in eq.buses ? m[:cn1_ψ_e_bus][c, bus] : 0))
-        @constraint(m, [c in n_1cases(r), bus in eq.buses],
-            m[:cn1_π][c, bus] ≥ m[:cn1_ψ_e_bus][c, bus])
+        if eq.allow_connector_opening
+            @constraint(m, [c in n_1cases(r), bus in buses(r); !(bus in _fixed_buses)],
+                m[:cn1_π][c, bus] ≤
+                sum(m[:cn1_ψ][c, bus, e] for e in incident(r, bus)) +
+                (bus in eq.buses ? m[:cn1_ψ_e_bus][c, bus] : 0))
+            @constraint(m, [c in n_1cases(r), bus in eq.buses],
+                m[:cn1_π][c, bus] ≥ m[:cn1_ψ_e_bus][c, bus])
 
-        @constraint(m, [c in n_1cases(r), bus_id in 1:length(eq.buses)],
-            m[:cn1_ψ_e_bus][c, eq.buses[bus_id]] ≤ m[:cn1_π_e_cc][c, eq.cc_id[bus_id]])
-        @constraint(m, [c in n_1cases(r), bus in eq.buses],
-            m[:cn1_ψ_e_bus][c, bus] ≤ 1 - m[:v_branch_e][bus])
-        @constraint(m, [c in n_1cases(r), bus_id in 1:length(eq.buses)],
-            m[:cn1_ψ_e_bus][c, eq.buses[bus_id]] ≥ m[:cn1_π_e_cc][c, eq.cc_id[bus_id]] - m[:v_branch_e][eq.buses[bus_id]])
+            @constraint(m, [c in n_1cases(r), bus_id in 1:length(eq.buses)],
+                m[:cn1_ψ_e_bus][c, eq.buses[bus_id]] ≤ m[:cn1_π_e_cc][c, eq.cc_id[bus_id]])
+            @constraint(m, [c in n_1cases(r), bus in eq.buses],
+                m[:cn1_ψ_e_bus][c, bus] ≤ 1 - m[:v_branch_e][bus])
+            @constraint(m, [c in n_1cases(r), bus_id in 1:length(eq.buses)],
+                m[:cn1_ψ_e_bus][c, eq.buses[bus_id]] ≥ m[:cn1_π_e_cc][c, eq.cc_id[bus_id]] - m[:v_branch_e][eq.buses[bus_id]])
 
-        @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
-            m[:cn1_π_e_cc][c, cc_id] ≥ m[:cn1_ψ_e_cc][c, cc_id, e_bus])
-        @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc)],
-            m[:cn1_π_e_cc][c, cc_id] ≤ sum(m[:cn1_ψ_e_cc][c, cc_id, e_bus] for e_bus in eq.cc[cc_id].buses))
+            @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
+                m[:cn1_π_e_cc][c, cc_id] ≥ m[:cn1_ψ_e_cc][c, cc_id, e_bus])
+            @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc)],
+                m[:cn1_π_e_cc][c, cc_id] ≤ sum(m[:cn1_ψ_e_cc][c, cc_id, e_bus] for e_bus in eq.cc[cc_id].buses))
 
-        @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
-            m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≤ m[:cn1_π][c, e_bus])
-        @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
-            m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≤ 1 - m[:v_branch_e][e_bus])
-        @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
-            m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≥ m[:cn1_π][c, e_bus] - m[:v_branch_e][e_bus])
-
+            @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
+                m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≤ m[:cn1_π][c, e_bus])
+            @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
+                m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≤ 1 - m[:v_branch_e][e_bus])
+            @constraint(m, [c in n_1cases(r), cc_id in 1:length(eq.cc), e_bus in eq.cc[cc_id].buses],
+                m[:cn1_ψ_e_cc][c, cc_id, e_bus] ≥ m[:cn1_π][c, e_bus] - m[:v_branch_e][e_bus])
+        else
+            @constraint(m, [c in n_1cases(r), bus in buses(r); !(bus in _fixed_buses)],
+                m[:cn1_π][c, bus] ≤
+                sum(m[:cn1_ψ][c, bus, e] for e in incident(r, bus)) +
+                (bus in eq.buses ? m[:cn1_π_e_cc][c, get_cci(eq, bus)] : 0))
+            @constraint(m, [c in n_1cases(r), bus in eq.buses],
+                m[:cn1_π][c, bus] ≥ m[:cn1_π_e_cc][c, get_cci(eq, bus)])
+        end
     end
 end
 
@@ -535,8 +566,8 @@ function OTS_balance!(m::Model, r::TNR, fixed_buses::Vector{Int}, eq::Union{Noth
         p = r.p[bus]
         if p < 0
             @constraint(m, m[:load][c, bus] == 0)
-            @constraint(m, m[:gen][c, bus] + p ≤ bigM * (1 - m[:cn1_π][c, bus]))
-            @constraint(m, -(m[:gen][c, bus] + p) ≤ bigM * (1 - m[:cn1_π][c, bus]))
+            @constraint(m, m[:gen][c, bus] + m[:σ][c] * p ≤ bigM * (1 - m[:cn1_π][c, bus]))
+            @constraint(m, -(m[:gen][c, bus] + m[:σ][c] * p) ≤ bigM * (1 - m[:cn1_π][c, bus]))
             @constraint(m, m[:gen][c, bus] ≤ bigM * m[:cn1_π][c, bus])
             @constraint(m, -m[:gen][c, bus] ≤ bigM * m[:cn1_π][c, bus])
         else
@@ -550,14 +581,15 @@ function OTS_balance!(m::Model, r::TNR, fixed_buses::Vector{Int}, eq::Union{Noth
     if !isnothing(eq)
         for c in n_1cases(r)
             for (i, bus) in enumerate(eq.buses)
-                @constraint(m, m[:p_e][c, bus] == eq.p[i] * m[:cn1_π_e_cc][c, eq.cc_id[i]])
+                @constraint(m, m[:p_e][c, bus] - eq.p[i] - (m[:σ][c] - 1) * eq.sloped_g[i] ≤ bigM * m[:cn1_π_e_cc][c, eq.cc_id[i]])
+                @constraint(m, m[:p_e][c, bus] - eq.p[i] - (m[:σ][c] - 1) * eq.sloped_g[i] ≥ -bigM * m[:cn1_π_e_cc][c, eq.cc_id[i]])
             end
             for (i, cc) in enumerate(eq.cc)
                 @constraint(m, m[:l_cc][c, i] == cc.l * m[:cn1_π_e_cc][c, i])
             end
         end
     end
-    # @constraint(m, [c in n_1cases(r)], sum(m[:load][c, :] .- m[:gen][c, :]) == 0)
+    @constraint(m, [c in n_1cases(r)], sum(m[:load][c, :] .- m[:gen][c, :]) == 0)
 end
 
 function OTS_balance_OPF!(m::Model, r::TNR)
@@ -695,13 +727,16 @@ function loadloss!(m::Model, r::TNR, fixed_buses::Vector{Int}, eq::Union{Nothing
     end
 end
 
-function branch_status!(m, branch_status::Union{AbstractArray{Bool},Dict{Int,Any},Nothing})
+function branch_status!(m, r::TNR, branch_status::Union{AbstractArray{Bool},Dict{Int,Any},AbstractArray{Int},AbstractArray{Tuple{String,String}},Nothing})
     isnothing(branch_status) && return
-    @info "in branch_status"
     if isa(branch_status, AbstractArray{Bool})
         @constraint(m, m[:v_branch] .== branch_status)
     elseif isa(branch_status, Dict{Int,Any})
         @constraint(m, [br in keys(branch_status)], m[:v_branch][br] == branch_status[br])
+    elseif isa(branch_status, AbstractArray{Int})
+        @constraint(m, m[:v_branch] .== [e in final_outages for e in edge_ids(r)])
+    elseif isa(branch_status, AbstractArray{Tuple{String,String}})
+        @constraint(m, m[:v_branch] .== [e_label_for(r.g, e) in final_outages for e in edge_ids(r)])
     end
 end
 
@@ -716,17 +751,13 @@ function secured_dc_OTS(g::MetaGraph;
     bus_orig::String,
     fixed_buses::Union{Vector{String},Vector{Int}}=Int[],
     fixed_phases::Vector{Float64}=Float64[],
-    branch_status::Union{AbstractArray{Bool},Dict{Int,Any},Nothing}=nothing,
+    branch_status::Union{AbstractArray{Bool},Dict{Int,Any},AbstractArray{Int},AbstractArray{Tuple{String,String}},Nothing}=nothing,
     eq::Union{Equivalent,Nothing}=nothing)
 
     model, r = init_model(g, contingencies, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only, tnr_pf, opf, bus_orig)
 
-    _fixed_phases = isempty(fixed_buses) ? [0.0] : fixed_phases
-    _fixed_buses = isempty(fixed_buses) ?
-                   Int[r.bus_orig_id] :
-                   isa(fixed_buses, Vector{Int}) ?
-                   fixed_buses :
-                   to_code(g, fixed_buses)
+    _fixed_phases = fixed_phases
+    _fixed_buses = isa(fixed_buses, Vector{Int}) ? fixed_buses : to_code(g, fixed_buses)
 
     @info "Fixed bus: $_fixed_buses"
     create_variables!(model, r, _fixed_buses, eq)
@@ -770,7 +801,7 @@ function secured_dc_OTS(g::MetaGraph;
 
     overload!(model, r, eq)
 
-    branch_status!(model, branch_status)
+    branch_status!(model, r, branch_status)
 
     @objective(model, Min,
         sum(model[:lostload][c] for c in n_1cases(r)) +
@@ -778,5 +809,6 @@ function secured_dc_OTS(g::MetaGraph;
     # + 0.01  * (allow_branch_openings ? sum(model[:v_branch]) : 0)) 
     # + 0.01 * (!isempty(bus_confs)   ? sum(model[:v_bus])    : 0) )
     optimize!(model)
+    !is_solved_and_feasible(model) && @warn "NOT FEASIBLE"
     model, r
 end

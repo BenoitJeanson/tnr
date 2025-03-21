@@ -4,6 +4,7 @@ using MetaGraphsNext
 using JuMP
 using Gurobi
 
+include("../src/GraphUtils.jl")
 include("../wip/Equivalent.jl")
 
 @enum DCPF_Type pf_linalg pf_optim
@@ -34,6 +35,12 @@ function setflows!(g::MetaGraph, flows::Vector{Float64})
     end
 end
 
+function setflows!(g::MetaGraph, flows::JuMP.Containers.SparseAxisArray{Float64,2,ELabel})
+    for edge in eachindex(flows)
+        g[edge...].p = flows[edge]
+    end
+end
+
 
 function dc_flow(g::MetaGraph; outages=[], trip=nothing, pf_type::DCPF_Type=pf_optim, kwargs...)
     h = deepcopy(g)
@@ -54,7 +61,6 @@ end
 
 
 function dc_flow_linalg(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64})
-    @info "DC PF with linalg"
     _D = spdiagm(B)
     _B = A * _D * A'
     n = length(P)
@@ -66,8 +72,8 @@ end
 
 function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64};
     slack::Union{Nothing,Int}=nothing,
-    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
-    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    slack_buses::Union{Nothing,Vector{Int}}=nothing,
+    slack_phases::Union{Nothing,Vector{Float64}}=nothing,
     equivalent::Union{Nothing,Equivalent}=nothing)
 
     nb_buses, nb_edges = size(A)
@@ -76,20 +82,20 @@ function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64}
     @variable(model, ϕ[1:nb_buses])
     @variable(model, flows[1:nb_edges])
 
-    (_fixed_buses, _fixed_phases) = !isnothing(fixed_buses) && !isnothing(fixed_phases) ?
-                                    (fixed_buses, fixed_phases) :
+    (_slack_buses, _slack_phases) = !isnothing(slack_buses) && !isnothing(slack_phases) ?
+                                    (slack_buses, slack_phases) :
                                     ([isnothing(slack) ? findmin(P)[2] : slack], [0.0])
 
-    @constraint(model, [f_bus_id in 1:length(_fixed_buses)], ϕ[_fixed_buses[f_bus_id]] == _fixed_phases[f_bus_id])
+    @constraint(model, [f_bus_id in 1:length(_slack_buses)], ϕ[_slack_buses[f_bus_id]] == _slack_phases[f_bus_id])
     @constraint(model, [edge in 1:nb_edges], flows[edge] == sum(B[edge] * A[bus, edge] * ϕ[bus] for bus in 1:nb_buses))
 
     if isnothing(equivalent)
-        @constraint(model, [bus in 1:nb_buses; !(bus in _fixed_buses)],
+        @constraint(model, [bus in 1:nb_buses; !(bus in _slack_buses)],
             P[bus] ==
             sum(A[bus, e] * flows[e] for e in 1:nb_edges))
     else
         @variable(model, flows_e[equivalent.buses])
-        @constraint(model, [bus in 1:nb_buses; !(bus in _fixed_buses)],
+        @constraint(model, [bus in 1:nb_buses; !(bus in _slack_buses)],
             P[bus] ==
             sum(A[bus, e] * flows[e] for e in 1:nb_edges) -
             (bus in equivalent.buses ? flows_e[bus] : 0))
@@ -103,38 +109,98 @@ function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64}
     end
 
     optimize!(model)
-    
+
     if is_solved_and_feasible(model)
-        slack_injections = [-sum(A[bus, e] * value(model[:flows][e]) for e in 1:nb_edges) for bus in _fixed_buses]
+        slack_injections = [-sum(A[bus, e] * value(model[:flows][e]) for e in 1:nb_edges) for bus in _slack_buses]
         return value.(model[:flows]), value.(model[:ϕ]), slack_injections
     else
         @warn "dc_flow_phase is not solved"
-        return zeros(nb_edges), zeros(nb_buses), zeros(nb_fixed_ϕ)
+        return zeros(nb_edges), zeros(nb_buses), isnothing(slack_phases) ? Int[] : zeros(nb_slack_ϕ)
     end
 end
+
+# function dc_flow_optim(
+#     g::MetaGraph;
+#     outages=Int[],
+#     trip=nothing,
+#     slack::Union{Nothing,Int}=nothing,
+#     slack_buses::Union{Nothing,Vector{Int}}=nothing,
+#     slack_phases::Union{Nothing,Vector{Float64}}=nothing,
+#     equivalent::Union{Nothing,Equivalent}=nothing)
+
+#     A, B, P = _graph_to_mat(g, outages=outages, trip=trip)
+#     dc_flow_optim(A, B, P; slack, slack_buses, slack_phases, equivalent)
+# end
 
 function dc_flow_optim(
     g::MetaGraph;
     outages=Int[],
     trip=nothing,
-    slack::Union{Nothing,Int}=nothing,
-    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
-    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    slack::Union{Nothing,VLabel}=nothing,
+    slack_buses::Union{Nothing,Vector{VLabel}}=nothing,
+    slack_phases::Union{Nothing,Vector{Float64}}=nothing,
     equivalent::Union{Nothing,Equivalent}=nothing)
 
-    A, B, P = _graph_to_mat(g, outages=outages, trip=trip)
-    dc_flow_optim(A, B, P; slack, fixed_buses, fixed_phases, equivalent)
+
+    (_slack_buses, _slack_phases) = !isnothing(slack_buses) && !isnothing(slack_phases) ?
+                                    (slack_buses, slack_phases) :
+                                    ([isnothing(slack) ? label_for(g, findmin(bus -> g[bus], labels(g))[2]) : slack], [0.0])
+
+    model = Model(Gurobi.Optimizer)
+    set_silent(model)
+    @variable(model, ϕ[collect(labels(g))])
+    @variable(model, flows[bus1 in labels(g), bus2 in outneighbor_labels(g, bus1)])
+    @variable(model, slack_injections[_slack_buses])
+
+    @constraint(model, [bus in _slack_buses],
+        slack_injections[bus] ==
+        sum([flows[bus_in, bus] for bus_in in inneighbor_labels(g, bus)]) -
+        sum([flows[bus, bus_out] for bus_out in outneighbor_labels(g, bus)]))
+
+    @constraint(model, [(i, f_bus_id) in enumerate(_slack_buses)], ϕ[f_bus_id] == _slack_phases[i])
+    @constraint(model, [edge in edge_labels(g)], flows[edge...] == g[edge...].b * (ϕ[edge[2]] - ϕ[edge[1]]))
+
+    # if isnothing(equivalent)
+    @constraint(model, [bus in labels(g); !(bus in _slack_buses)],
+        g[bus] ==
+        sum(flows[bus, bus_out] for bus_out in outneighbor_labels(g, bus)) -
+        sum(flows[bus_in, bus] for bus_in in inneighbor_labels(g, bus)))
+    # else
+    #     @variable(model, flows_e[equivalent.buses])
+    #     @constraint(model, [bus in 1:nb_buses; !(bus in _slack_buses)],
+    #         P[bus] ==
+    #         sum(A[bus, e] * flows[e] for e in 1:nb_edges) -
+    #         (bus in equivalent.buses ? flows_e[bus] : 0))
+    #     @constraint(model, [e_bus_id in 1:length(equivalent.buses)],
+    #         flows_e[equivalent.buses[e_bus_id]] ==
+    #         equivalent.p[e_bus_id] +
+    #         sum(equivalent.B[e_bus_id, other_id] * ϕ[other_bus] for (other_id, other_bus) in enumerate(equivalent.buses)))
+    #     @constraint(model, [cc in equivalent.cc],
+    #         sum(flows_e[bus] for bus in cc.buses) ==
+    #         sum(equivalent.p[i] for (i, bus) in enumerate(equivalent.buses) if bus in cc.buses))
+    # end
+
+    optimize!(model)
+    print(model)
+
+    if is_solved_and_feasible(model)
+        return value.(model[:flows]), value.(model[:ϕ]), value.(model[:slack_injections])
+    else
+        @warn "dc_flow_phase is not solved"
+        return nothing
+    end
 end
+
 
 function dc_flow_optim!(
     g::MetaGraph;
     outages=Int[],
     trip=nothing,
     slack::Union{Nothing,Int}=nothing,
-    fixed_buses::Union{Nothing,Vector{Int}}=nothing,
-    fixed_phases::Union{Nothing,Vector{Float64}}=nothing,
+    slack_buses::Union{Nothing,Vector{Int}}=nothing,
+    slack_phases::Union{Nothing,Vector{Float64}}=nothing,
     equivalent::Union{Nothing,Equivalent}=nothing)
-    flows, ϕ, slack_injections = dc_flow_optim(g; outages, trip, slack, fixed_buses, fixed_phases,equivalent)
+    flows, ϕ, slack_injections = dc_flow_optim(g; outages, trip, slack, slack_buses, slack_phases, equivalent)
     setflows!(g, flows)
     flows, ϕ, slack_injections
 end
