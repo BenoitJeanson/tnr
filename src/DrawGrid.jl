@@ -68,7 +68,7 @@ function draw(g_orig::MetaGraph;
                 marker = (g, label) -> g[label]>=0 ? :rect : :circle,
                 node_size = (g, label, max_p) -> sqrt(abs(g[label]))/sqrt(max_p)*50,
 
-                edge_labels = (br; digits = 0) -> L"%$(round(Int,100*br.p))",
+                edge_labs = (br; digits = 0) -> L"%$(round(Int,100*br.p))",
                 edge_coloring = (br; tol=1e-6) -> br.outage || br.trip ? :black : (abs(br.p>br.p_max + tol) ? :red : :green3),
                 edge_style = branch -> branch.trip ? (:dot, :dense) : :solid,
                 edge_width = br -> br.outage || br.trip ? 4 : 2,
@@ -79,14 +79,13 @@ function draw(g_orig::MetaGraph;
 
     g = copy(g_orig)
     max_p = maximum(collect(labels(g)) .|> l->abs(g[l]))
-    gLabels = [label_for(g, v) for v in vertices(g)]
     to_reverse = []
-    for (i,e) in enumerate(edges(g))
-        br = e_index_for(g, e)
-        if i in outages
+    for e in edge_labels(g)
+        br = g[e...]
+        if e in outages
             br.outage = true
         end
-        if i == trip
+        if e == trip
             br.trip = true
         end
         if br.p<0
@@ -94,10 +93,12 @@ function draw(g_orig::MetaGraph;
         end
     end
     for e in to_reverse
-        b = e_index_for(g, e)
+        # g[e...].p = -g[e...].p
+        b = g[e...]
         b.p = -b.p
-        rem_edge!(g, src(e), dst(e))
-        g[label_for(g,dst(e)), label_for(g,src(e))] = b
+        delete!(g, e...)
+        g[e[2], e[1]] = b
+        # g[label_for(g,dst(e)), label_for(g,src(e))] = b
     end
 
     if isnothing(fig)
@@ -115,19 +116,20 @@ function draw(g_orig::MetaGraph;
     ylims!(ax, y_min-delta_y, y_max+delta_y)
     
     g_labels = [label_for(g, v) for v in vertices(g)]
-    branches = [e_index_for(g, e) for e in edges(g)]
+    # branches = [e_index_for(g, e) for e in edges(g)]
+    branches = collect(map(el->g[el...], edge_labels(g)))
 
     graphplot!(ax, g;
         layout = layout isa Dict{String, Point2} ? complete_subBus_coords(g, layout) : layout,
-        node_size = isnothing(node_size) ? 0 : [node_size(g, l, max_p) for l in gLabels],
+        node_size = isnothing(node_size) ? 0 : [node_size(g, l, max_p) for l in labels(g)],
         node_attr = (marker = [marker(g, l) for l in g_labels], color= :white, strokecolor = :red, strokewidth = 3,),
         nlabels = isnothing(node_labels) ? nothing : [node_labels(g, l, digits=digits) for l in g_labels],
         nlabels_align = (:center,:top),
         nlabels_attr=(rotation=0,),
         nlabels_distance=-40,
-        elabels = isnothing(edge_labels) ? nothing : [edge_labels(b, digits=digits) for b in branches],
+        elabels = isnothing(edge_labs) ? nothing : [edge_labs(b, digits=digits) for b in branches],
         edge_plottype = :beziersegments,
-		edge_attr = (linestyle = [edge_style(b) for b in branches],),
+		edge_attr = (linestyle = [edge_style(br) for br in branches],),
         edge_color = [edge_coloring(b) for b in branches],
         edge_width = [edge_width(b) for b in branches],
         arrow_size = [b.outage || b.trip ? 0 : arrow_size for b in branches],

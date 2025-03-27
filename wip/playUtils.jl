@@ -7,8 +7,10 @@ function create_case(case::String, buslabels=lab -> "$lab")
     coord = load_coord(joinpath("data", "exp_raw", "coord", "$case.csv"), buslabels)
     g = network2graph(sys, buslabels)
     bus_confs = Int[]
+    trippings=nothing
 
     if case == "case14"
+        trippings = [("F", "L"),("L", "M"),("F", "M"),("M", "N"),("I", "N"),("F", "K"),("J", "K"),("I", "J"),("G", "I"),("G", "H"),("E", "F"),("D", "I"),("D", "G"),("D", "E"),("C", "D"),("A", "E"),("A", "B"),("B", "E"),("B", "D"),("B", "C")] # used for griddra
         add_constraint(g, b -> b.p_max = 1.1)
         g[buslabels(14)] = 1
         g[buslabels(8)] = 0.1
@@ -31,7 +33,7 @@ function create_case(case::String, buslabels=lab -> "$lab")
 
     balance!(g, all_non_zero_uniform)
 
-    g, bus_confs, coord
+    g, trippings, bus_confs, coord
 end
 
 function create_multiplecase(n::Int=2)
@@ -113,23 +115,83 @@ function showallvalues(model)
     foreach(k -> println("$k: $(value(k))"), all_variables(model))
 end
 
+function connected(g::MetaGraph, bus_origin::String; outages::AbstractArray{ELabel}=ELabel[], trip::Union{Nothing,ELabel}=nothing, eq::Union{Nothing,Equivalent}=nothing)
+
+    """
+    _extractsubgraph is embedded as it only applies if the bus_labels are the labels of buses belonging to a single connected component 
+    """
+    function _extractsubgraph(g::MetaGraph, bus_labels::Vector{String})
+        g_sub = _initgraph()
+        for bus in bus_labels
+            g_sub[bus] = g[bus]
+        end
+        for e in edges(g)   # TODO: prefere use of edge_labels
+            slabel = label_for(g, src(e))
+            if slabel in bus_labels
+                dlabel = label_for(g, dst(e))
+                g_sub[slabel, dlabel] = g[slabel, dlabel]
+            end
+        end
+        g_sub
+    end
+
+    g_result = copy(g)
+
+    openbranches = copy(outages)
+    !isnothing(trip) && push!(openbranches, trip)
+
+    for br in openbranches
+        delete!(g_result, br...)
+    end
+
+    # create virtual edges that will be removed after the connected components calculation
+    eq_edges = ELabel[]
+    if !isnothing(eq)
+        for cc in eq.cc
+            for i in eachindex(cc.buses), j in i+1:length(cc.buses)
+                elabs = (cc.buses[i], cc.buses[j])
+                if !haskey(g_result, elabs...)
+                    g_result[elabs...] = Branch()
+                    push!(eq_edges, elabs)
+                end
+            end
+        end
+    end
+
+    ccs = connected_components(g_result)
+    foreach(elab -> delete!(g_result, elab...), eq_edges)
+    cc = ccs[findfirst(cc -> bus_origin in [label_for(g_result, v) for v in cc], ccs)]
+    _extractsubgraph(g_result, [label_for(g_result, v) for v in cc])
+end
+
+function total_load(g)
+    result = 0
+    for v in vertices(g)
+        lab = label_for(g, v)
+        if g[lab] > 0
+            result += g[lab]
+        end
+    end
+    result
+end
+
+
 function calcanddraw(g; bus_orig=nothing,
-    outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[], trip::Union{Nothing,Int,Tuple{String,String}}=nothing,
+    outages::AbstractArray{ELabel}=ELabel[],
+    trip::Union{Nothing,ELabel}=nothing,
     label="", eq=nothing, kwargs...)
-    _outages = outages isa AbstractArray{Tuple{String,String}} ? e_code_for(g, outages) : outages
 
     bus_orig = isnothing(bus_orig) ? label_for(g, 1) : bus_orig
-    _trip = trip isa Tuple{String,String} ? e_code_for(g, trip...) : trip
-    g_cc = connected(g, bus_orig; outages=_outages, trip=_trip, eq=eq)
+    g_cc = connected(g, bus_orig; outages=outages, trip=trip, eq=eq)
 
     if nv(g) == nv(g_cc)
         h = g
-        houtages = _outages
-        htrip = _trip
+        houtages = outages
+        htrip = trip
     else
         h = g_cc
         balance!(h)
-        houtages = Int[]
+        houtages = ELabel[]
         htrip = nothing
         label = label == "" ? "" : L"\textbf{%$label}(%$(round(Int, 100*(total_load(g)-total_load(g_cc)))))"
     end
@@ -140,24 +202,19 @@ function calcanddraw(g; bus_orig=nothing,
         ; kwargs...)
 end
 
-function griddraw(g, bus_orig::String, trips::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}, outages::Union{AbstractArray{Int},AbstractArray{Tuple{String,String}}}=Int[], eq=nothing; kwargs...)
-    _trips = isa(trips, AbstractArray{Tuple{String,String}}) ? e_code_for(g, trips) : trips
-    _outages = isa(outages, AbstractArray{Tuple{String,String}}) ? e_code_for(g, outages) : outages
+function griddraw(g, bus_orig::String, trips::Union{AbstractArray{ELabel}}, outages::Union{AbstractArray{ELabel}}=ELabel[], eq=nothing; kwargs...)
     fig = Figure(size=(600, 500), fontsize=20)
     splitlength = 5
-    all_edges = collect(edges(g))
-    for (i, trip) in enumerate(_trips)
-        e = all_edges[trip]
-        label = "$(label_for(g, src(e)))$(label_for(g, dst(e)))"
-
-        if !(trip in _outages)
+    for (i, trip) in enumerate(trips)
+        label = trip[1]*trip[2]
+        if !(trip in outages)
             draw(
                 g;
-                outages=_outages,
+                outages=outages,
                 trip=trip,
                 fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
                 node_labels=nothing,
-                edge_labels=nothing,
+                edge_labs=nothing,
                 arrow_size=0,
                 node_size=nothing,
                 edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
@@ -168,11 +225,11 @@ function griddraw(g, bus_orig::String, trips::Union{AbstractArray{Int},AbstractA
             calcanddraw(
                 g;
                 bus_orig=bus_orig,
-                outages=_outages,
+                outages=outages,
                 trip=trip,
                 fig=fig[1, 1][(i-1)÷splitlength, (i-1)%splitlength],
                 node_labels=nothing,
-                edge_labels=nothing,
+                edge_labs=nothing,
                 arrow_size=0,
                 node_size=nothing,
                 edge_width=br -> br.trip || (abs(br.p > br.p_max + 1e-6)) ? 4 : 2,
@@ -209,33 +266,34 @@ function warmstart!(tomodel, frommodel, var)
     set_start_value.(tomodel[var], value.(frommodel[var]))
 end
 
-function retrieve_flows!(g::MetaGraph, model::Model, case::Int)
+function retrieve_flows!(g::MetaGraph, model::Model, case)
     !is_solved_and_feasible(model) && @error "model not solved"
-    for (i, flow) in enumerate(value.(model[:flows][case, :]))
-        g[e_label_for(g, i)...].p = flow
+    for br in eachindex(model[:flows][case, :, :])
+        g[br...].p = value(model[:flows][case, br...])
     end
 end
 
 function openings(model::Model)
     is_solved_and_feasible(model) ?
-    [i for (i, v_branch) in enumerate(value.(model[:v_branch])) if v_branch == 1] :
-    Int[]
+    [index for index in eachindex(model[:v_branch]) if value(model[:v_branch][index]) == 1] :
+    ELabel[]
 end
 
-function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_phases=nothing, eq::Union{Equivalent,Nothing}=nothing)
+function draw_TNR_result(g, model, r; coord=nothing, slack_buses=nothing, slack_phases=nothing, eq::Union{Equivalent,Nothing}=nothing)
     fig = Figure(size=(1500, 800), fontsize=20)
 
-    if isnothing(fixed_buses)
-        g_base = dc_flow(g, equivalent=eq)
+    g_base=copy(g)
+    if isnothing(slack_buses)
+        dc_flow_optim!(g_base, equivalent=eq)
     else
-        g_base = dc_flow(g;
-            fixed_buses=isa(fixed_buses, AbstractArray{Int}) ? fixed_buses : to_code(g, fixed_buses),
-            fixed_phases=fixed_phases, equivalent=eq)
+        dc_flow_optim!(g_base, 
+            slack_buses=slack_buses,
+            slack_phases=slack_phases, equivalent=eq)
     end
     layout = isa(coord, Dict{String,Point2}) ? coord : Stress(Ptype=Float32)
     draw(g_base, fig=fig[1, 1], layout=layout, title="$(r.tnr_pf)")
 
-    _openings = Int[]
+    _openings = ELabel[]
     applied_conf = BusConf[]
 
     display(solution_summary(model))
@@ -247,7 +305,6 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
         if r.allow_branch_openings || r.OTS_only
             _openings = openings(model)
             println("Open: $_openings")
-            println([collect(edge_labels(g))[i] for i in _openings])
         end
 
         if r.bus_confs ≠ BusConf[] && !r.OTS_only
@@ -255,10 +312,11 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
             applied_conf = BusConf[r.bus_confs[i] for (i, v) in enumerate(value.(model[:v_bus])) if isapprox(v, 1, atol=1e-9)]
             println("Applied_conf: $applied_conf")
         end
-        g_result, openings_result = add_subBus(g, applied_conf, _openings)
+        # g_result, openings_result = add_subBus(g, applied_conf, _openings) TODO: to be updated with Bus confs !
+        g_result = copy(g)
         retrieve_flows!(g_result, model, n_case(r))
         # dc_flow!(g_result, outages=[openings_result])
-        draw(g_result, fig=fig[1, 2], outages=openings_result, layout=layout, title="objective value:$(round(objective_value(model); digits = 5 ))")
+        draw(g_result, fig=fig[1, 2], outages=_openings, layout=layout, title="objective value:$(round(objective_value(model); digits = 5 ))")
     else
         @warn "NOT FEASIBLE"
     end
@@ -266,7 +324,7 @@ function draw_TNR_result(g, model, r; coord=nothing, fixed_buses=nothing, fixed_
     display(fig)
 end
 
-function draw_model_case(g::MetaGraph, model::Model, case::Int; kwargs...)
+function draw_model_case(g::MetaGraph, model::Model, case; kwargs...)
     h = copy(g)
     retrieve_flows!(h, model, case)
     draw(h; kwargs...)
@@ -283,8 +341,8 @@ function display_bus_and_edge_labels(g::MetaGraph)
         println(v, ":", label_for(g, v))
     end
     println("\nEdge Labels:")
-    for v in 1:ne(g)
-        println(v, ":", e_label_for(g, v))
+    for (i, elab) in enumerate(edge_labels(g))
+        println(i, ":", elab)
     end
 end
 
@@ -332,3 +390,10 @@ function sandbox(r, equivalent)
     end
     m, r
 end
+
+function filter_model(model::Model, st::String)
+    for line in eachsplit(string(model), "\n")
+        occursin(st, line) && println(line)
+    end
+end
+

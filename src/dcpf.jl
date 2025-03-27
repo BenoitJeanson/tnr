@@ -119,22 +119,9 @@ function dc_flow_optim(A::AbstractMatrix, B::Vector{Float64}, P::Vector{Float64}
     end
 end
 
-# function dc_flow_optim(
-#     g::MetaGraph;
-#     outages=Int[],
-#     trip=nothing,
-#     slack::Union{Nothing,Int}=nothing,
-#     slack_buses::Union{Nothing,Vector{Int}}=nothing,
-#     slack_phases::Union{Nothing,Vector{Float64}}=nothing,
-#     equivalent::Union{Nothing,Equivalent}=nothing)
-
-#     A, B, P = _graph_to_mat(g, outages=outages, trip=trip)
-#     dc_flow_optim(A, B, P; slack, slack_buses, slack_phases, equivalent)
-# end
-
 function dc_flow_optim(
     g::MetaGraph;
-    outages=Int[],
+    outages::AbstractArray{ELabel}=ELabel[],
     trip=nothing,
     slack::Union{Nothing,VLabel}=nothing,
     slack_buses::Union{Nothing,Vector{VLabel}}=nothing,
@@ -146,6 +133,7 @@ function dc_flow_optim(
                                     (slack_buses, slack_phases) :
                                     ([isnothing(slack) ? label_for(g, findmin(bus -> g[bus], labels(g))[2]) : slack], [0.0])
 
+    _outages = isnothing(trip) ? outages : [outages; trip]
     model = Model(Gurobi.Optimizer)
     set_silent(model)
     @variable(model, ϕ[collect(labels(g))])
@@ -153,35 +141,30 @@ function dc_flow_optim(
     @variable(model, slack_injections[_slack_buses])
 
     @constraint(model, [bus in _slack_buses],
-        slack_injections[bus] ==
-        sum([flows[bus_in, bus] for bus_in in inneighbor_labels(g, bus)]) -
-        sum([flows[bus, bus_out] for bus_out in outneighbor_labels(g, bus)]))
+        slack_injections[bus] == sum(sign * flows[e...] for (e, sign) in incident_signed(g, bus)))
 
     @constraint(model, [(i, f_bus_id) in enumerate(_slack_buses)], ϕ[f_bus_id] == _slack_phases[i])
-    @constraint(model, [edge in edge_labels(g)], flows[edge...] == g[edge...].b * (ϕ[edge[2]] - ϕ[edge[1]]))
+    @constraint(model, [edge in edge_labels(g); !(edge in _outages)], flows[edge...] == g[edge...].b * (ϕ[edge[2]] - ϕ[edge[1]]))
+    @constraint(model, [edge in _outages], flows[edge...] == 0)
 
-    # if isnothing(equivalent)
-    @constraint(model, [bus in labels(g); !(bus in _slack_buses)],
-        g[bus] ==
-        sum(flows[bus, bus_out] for bus_out in outneighbor_labels(g, bus)) -
-        sum(flows[bus_in, bus] for bus_in in inneighbor_labels(g, bus)))
-    # else
-    #     @variable(model, flows_e[equivalent.buses])
-    #     @constraint(model, [bus in 1:nb_buses; !(bus in _slack_buses)],
-    #         P[bus] ==
-    #         sum(A[bus, e] * flows[e] for e in 1:nb_edges) -
-    #         (bus in equivalent.buses ? flows_e[bus] : 0))
-    #     @constraint(model, [e_bus_id in 1:length(equivalent.buses)],
-    #         flows_e[equivalent.buses[e_bus_id]] ==
-    #         equivalent.p[e_bus_id] +
-    #         sum(equivalent.B[e_bus_id, other_id] * ϕ[other_bus] for (other_id, other_bus) in enumerate(equivalent.buses)))
-    #     @constraint(model, [cc in equivalent.cc],
-    #         sum(flows_e[bus] for bus in cc.buses) ==
-    #         sum(equivalent.p[i] for (i, bus) in enumerate(equivalent.buses) if bus in cc.buses))
-    # end
-
+    if isnothing(equivalent)
+        @constraint(model, [bus in labels(g); !(bus in _slack_buses)],
+            g[bus] == sum(sign * flows[e...] for (e, sign) in incident_signed(g, bus)))
+    else
+        @variable(model, flows_e[equivalent.buses])
+        @constraint(model, [bus in labels(g); !(bus in _slack_buses)],
+            g[bus] ==
+            sum(sign * flows[e...] for (e, sign) in incident_signed(g, bus)) +
+            (bus in equivalent.buses ? flows_e[bus] : 0))
+        @constraint(model, [e_bus_id in 1:length(equivalent.buses)],
+            flows_e[equivalent.buses[e_bus_id]] ==
+            equivalent.p[e_bus_id] +
+            sum(equivalent.B[e_bus_id, other_id] * ϕ[other_bus] for (other_id, other_bus) in enumerate(equivalent.buses)))
+        @constraint(model, [cc in equivalent.cc],
+            sum(flows_e[bus] for bus in cc.buses) ==
+            sum(equivalent.p[i] for (i, bus) in enumerate(equivalent.buses) if bus in cc.buses))
+    end
     optimize!(model)
-    print(model)
 
     if is_solved_and_feasible(model)
         return value.(model[:flows]), value.(model[:ϕ]), value.(model[:slack_injections])
@@ -194,10 +177,10 @@ end
 
 function dc_flow_optim!(
     g::MetaGraph;
-    outages=Int[],
+    outages=ELabel[],
     trip=nothing,
-    slack::Union{Nothing,Int}=nothing,
-    slack_buses::Union{Nothing,Vector{Int}}=nothing,
+    slack::Union{Nothing,VLabel}=nothing,
+    slack_buses::Union{Nothing,Vector{VLabel}}=nothing,
     slack_phases::Union{Nothing,Vector{Float64}}=nothing,
     equivalent::Union{Nothing,Equivalent}=nothing)
     flows, ϕ, slack_injections = dc_flow_optim(g; outages, trip, slack, slack_buses, slack_phases, equivalent)

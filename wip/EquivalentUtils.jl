@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate("tnr")
-
 include("../src/GraphUtils.jl")
 include("../src/dcpf.jl")
 include("Equivalent.jl")
@@ -11,103 +8,80 @@ using JuMP
 using Gurobi
 using Graphs
 
-function subgraph(g::MetaGraph, buses_branches::Union{Dict{Int,Vector{Int}},Dict{String,Vector{Tuple{String,String}}}})
+function subgraph(g::MetaGraph, buses_branches::Dict{VLabel,Vector{ELabel}})
 
-    function _r_add_bus!(h, buses_to_rm, edges_to_rm, g, A, buses_branches, bus)
-        bus_label = label_for(g, bus)
+    function _r_add_bus!(h, buses_to_rm, edges_to_rm, g, _buses_branches, bus_label)
         if !haskey(h, bus_label)
             h[bus_label] = g[bus_label]
-            !(haskey(buses_branches, bus)) && push!(buses_to_rm, bus_label)
-            _edges = haskey(buses_branches, bus) ?
-                     buses_branches[bus] :
-                     filter(e -> A[bus, e] ≠ 0, 1:size(A)[2])
+            !(haskey(_buses_branches, bus_label)) && push!(buses_to_rm, bus_label)
+            _edges = haskey(_buses_branches, bus_label) ?
+                     _buses_branches[bus_label] :
+                     incident(g, bus_label)
             for e in _edges
-                bus2 = findfirst(i -> i ≠ bus && A[i, e] ≠ 0, 1:size(A)[1])
-                _r_add_bus!(h, buses_to_rm, edges_to_rm, g, A, buses_branches, bus2)
-                s, d = e_label_for(g, e)
-                h[s, d] = g[s, d]
-                push!(edges_to_rm, (s, d))
+                bus2 = opposite(e, bus_label)
+                _r_add_bus!(h, buses_to_rm, edges_to_rm, g, _buses_branches, bus2)
+                h[e...] = g[e...]
+                push!(edges_to_rm, e)
             end
         end
     end
 
-    _buses_branches = isa(buses_branches, Dict{Int,Vector{Int}}) ?
-                      buses_branches :
-                      to_code(g, buses_branches)
-
     A = incidence_matrix(g; oriented=true)
 
     sub = _initgraph()
-    buses_to_rm = String[]
-    edges_to_rm = Tuple{String,String}[]
-    _r_add_bus!(sub, buses_to_rm, edges_to_rm, g, A, _buses_branches, first(keys(_buses_branches)))
-    _mapedges!(sub)
+    buses_to_rm = VLabel[]
+    edges_to_rm = ELabel[]
+    _r_add_bus!(sub, buses_to_rm, edges_to_rm, g, buses_branches, first(keys(buses_branches)))
     remaining = copy(g)
     foreach(e -> delete!(remaining, e[1], e[2]), edges_to_rm)
     foreach(b -> delete!(remaining, b), buses_to_rm)
-    _mapedges!(remaining)
     sub, remaining
 end
 
-function extract_export_phases(g::MetaGraph, phases::Vector{Float64}, fixed_buses::Vector{String})
-    [phases[code_for(g, bus)] for bus in fixed_buses]
+function extract_export_phases(g::MetaGraph, phases::Vector{Float64}, buses::Vector{String})
+    [phases[code_for(g, bus)] for bus in buses]
 end
 
-function convert_id(orig::MetaGraph, target::MetaGraph, vertex::Int)
-    code_for(target, label_for(orig, vertex))
-end
-
-function convert_id(orig::MetaGraph, target::MetaGraph, vertices::AbstractArray{Int})
-    map(v -> convert_id(orig, target, b), vertices)
+function extract_export_phases(g::MetaGraph, phases::JuMP.Containers.DenseAxisArray{Float64}, buses::Vector{String})
+    [phases[bus] for bus in buses]
 end
 
 function equivalent_parameters(
     orig::MetaGraph,
-    host::MetaGraph,
-    buses::Union{AbstractArray{Int},AbstractArray{String}},
+    buses::AbstractArray{VLabel},
     include_branches_limites::Bool;
-    outages::Union{AbstractArray{Int},AbstractArray{ELabel}}=Int[],)
+    outages::AbstractArray{ELabel}=ELabel[],)
 
-    _buses_in_orig = isa(buses, AbstractArray{String}) ? to_code(orig, buses) : buses
-    _bus_labels = isa(buses, AbstractArray{Int}) ? to_label(orig, buses) : buses
-    _buses_in_host = to_code(host, _bus_labels)
-    _outages_ids = isa(outages, AbstractArray{ELabel}) ?
-                   e_code_for(orig, outages) : outages
-    _outages_labels = isa(outages, AbstractArray{Int}) ?
-                      e_label_for(orig, outages) : outages
-
-    nb_fixed_buses = length(_buses_in_orig)
+    nb_fixed_buses = length(buses)
     sloped_g = copy(orig)
     foreach(bus -> (sloped_g[bus] *= sloped_g[bus] ≥ 0 ? 1 : 2), labels(sloped_g))
-    _, _, stressed_gen = dc_flow_optim(sloped_g; outages=_outages_ids, fixed_buses=_buses_in_orig, fixed_phases=zeros(Float64, nb_fixed_buses))
-    flows, _, injections = dc_flow_optim(orig; outages=_outages_ids, fixed_buses=_buses_in_orig, fixed_phases=zeros(Float64, nb_fixed_buses))
-    @info "stressed_gen", stressed_gen
-    @info "injections", injections
-    gen_slope = stressed_gen .- injections
+    _, _, stressed_gen = dc_flow_optim(sloped_g; outages=outages, slack_buses=buses, slack_phases=zeros(Float64, nb_fixed_buses))
+    flows, _, injections = dc_flow_optim(orig; outages=outages, slack_buses=buses, slack_phases=zeros(Float64, nb_fixed_buses))
+    internal_branches = collect(eachindex(flows))
+    f_max = [orig[e...].p_max for e in eachindex(flows)]
+    gen_slope = stressed_gen.data .- injections.data
     B = zeros(Float64, nb_fixed_buses, nb_fixed_buses)
     F = zeros(Float64, ne(orig), nb_fixed_buses)
     for i in 1:nb_fixed_buses
         dϕ = zeros(Float64, nb_fixed_buses)
         dϕ[i] = 1
-        flows2, _, injections2 = dc_flow_optim(orig; outages=_outages_ids, fixed_buses=_buses_in_orig, fixed_phases=dϕ)
-        B[:, i] .= injections2 .- injections
-        F[:, i] .= flows2 .- flows
+        flows2, _, injections2 = dc_flow_optim(orig; outages=outages, slack_buses=buses, slack_phases=dϕ)
+        B[:, i] .= injections2.data .- injections.data
+        F[:, i] .= [flows2[k] - flows[k] for k in eachindex(flows)]
     end
     orig_outages = copy(orig)
-    foreach(e -> delete!(orig_outages, e[1], e[2]), _outages_labels)
+    foreach(e -> delete!(orig_outages, e...), outages)
     cc_orig = connected_components(orig_outages)
     ccs = OTS_cc[]
     for cc in cc_orig
-        buses = Int[convert_id(orig, host, bus) for bus in _buses_in_orig if bus in cc]
-        l = sum([max(orig[label_for(orig, bus)], 0) for bus in cc])
-        g = sum([-min(orig[label_for(orig, bus)], 0) for bus in cc])
-        push!(ccs, OTS_cc(buses, l, g))
+        cc_buses = VLabel[bus for bus in buses if code_for(orig_outages, bus) in cc]
+        l = sum([max(orig[bus], 0) for bus in cc_buses])
+        g = sum([-min(orig[bus], 0) for bus in cc_buses])
+        push!(ccs, OTS_cc(cc_buses, l, g))
     end
-    f_max = [orig[e...].p_max for e in edge_labels(orig)]
     if include_branches_limites
-        return Equivalent(_bus_labels, _buses_in_host, injections, gen_slope, B, ccs, flows, f_max, F)
+        return Equivalent(buses, injections.data, gen_slope, B, ccs, internal_branches, [flows[k] for k in eachindex(flows)], f_max, F)
     else
-        return Equivalent(_bus_labels, _buses_in_host, injections, gen_slope, B, ccs)
+        return Equivalent(buses, injections.data, gen_slope, B, ccs)
     end
 end
-
