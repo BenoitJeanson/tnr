@@ -46,6 +46,8 @@ const VLabel = String
 from(e::ELabel) = e[1]
 to(e::ELabel) = e[2]
 
+str(e::ELabel) = e[1]*e[2]
+
 lsrc(g::MetaGraph, e::Graphs.SimpleEdge) = label_for(g, src(e))
 ldst(g::MetaGraph, e::Graphs.SimpleEdge) = label_for(g, dst(e))
 e_index_for(g::MetaGraph, e::Graphs.SimpleEdge) = g[lsrc(g, e), ldst(g, e)]

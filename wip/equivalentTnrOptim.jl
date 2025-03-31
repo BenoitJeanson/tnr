@@ -52,7 +52,7 @@ function create_variables!(m::Model, r::TNR, fixed_buses::Vector{VLabel}=VLabel[
 
     if !isnothing(eq)
         @variable(m, flows_e[cases(r), eq.buses])
-        @variable(m, inner_flows_e[cases(r), 1:length(eq.f)])
+        @variable(m, inner_flows_e[cases(r), [str(e) for e in eq.internal_branches]])
         if eq.allow_connector_opening
             @variable(m, ϕ_e[cases(r), eq.buses])
             @variable(m, v_branch_e[eq.buses], Bin)
@@ -143,12 +143,13 @@ function overload!(m::Model, r::TNR, eq::Union{Equivalent,Nothing})
             @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≤ eq.f_max[e_id])
             @constraint(m, [c in cases(r), e_id in 1:length(eq.f)], eq.f[e_id] + sum(eq.F[e_id, :] .* m[:ϕ_e][c, :]) ≥ -eq.f_max[e_id])
         else
+            ib = [str(eq.internal_branches[e_id]) for e_id in 1:length(eq.f)]
             @constraint(m, [c in cases(r), e_id in 1:length(eq.f)],
-                m[:inner_flows_e][c, e_id] == eq.f[e_id] + sum(eq.F[e_id, bus_id] * m[:ϕ][c, bus] for (bus_id, bus) in enumerate(eq.buses)))
+                m[:inner_flows_e][c, ib[e_id]] == eq.f[e_id] + sum(eq.F[e_id, bus_id] * m[:ϕ][c, bus] for (bus_id, bus) in enumerate(eq.buses)))
             @constraint(m, [c in cases(r), e_id in 1:length(eq.f)],
-                m[:inner_flows_e][c, e_id] ≤ eq.f_max[e_id])
+                m[:inner_flows_e][c, ib[e_id]] ≤ eq.f_max[e_id])
             @constraint(m, [c in cases(r), e_id in 1:length(eq.f), bus in eq.buses],
-                m[:inner_flows_e][c, e_id] ≥ -eq.f_max[e_id])
+                m[:inner_flows_e][c, ib[e_id]] ≥ -eq.f_max[e_id])
         end
     end
 end
@@ -396,7 +397,7 @@ function loadloss!(m::Model, r::TNR, fixed_buses::Vector{VLabel}, eq::Union{Noth
     end
 end
 
-function branch_status!(m, r::TNR, branch_status::Union{ELabel,Nothing})
+function branch_status!(m, r::TNR, branch_status::Union{AbstractArray{ELabel},Nothing})
     isnothing(branch_status) && return
     @constraint(m, [e in branches(r)], m[:v_branch][e...] == (e in branch_status))
 end
@@ -412,7 +413,7 @@ function secured_dc_OTS(g::MetaGraph;
     bus_orig::String,
     fixed_buses::Vector{VLabel}=VLabel[],
     fixed_phases::Vector{Float64}=Float64[],
-    branch_status::Union{AbstractArray{Bool},Dict{Int,Any},AbstractArray{Int},AbstractArray{Tuple{String,String}},Nothing}=nothing,
+    branch_status::Union{AbstractArray{ELabel},Nothing}=nothing,
     eq::Union{Equivalent,Nothing}=nothing)
 
     model, r = init_model(g, contingencies, n_1_connectedness, bus_confs, allow_branch_openings, OTS_only, tnr_pf, opf, bus_orig)

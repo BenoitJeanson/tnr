@@ -83,7 +83,7 @@ TNR(g::MetaGraph, bus_orig) = TNR(g, collect(edge_labels(g)), false, BusConf[], 
 
 n_case(tnr::TNR) = tnr.n_case
 
-branch_to_case(tnr::TNR, case::ELabel) = case[1] * case[2]
+branch_to_case(tnr::TNR, case::ELabel) = str(case)
 
 cases(tnr::TNR) = tnr.cases
 
