@@ -38,17 +38,17 @@ model_sub, r_sub = secured_dc_OTS(sub,
 );
 draw_TNR_result(sub, model_sub, r_sub, slack_buses=fixed_buses, slack_phases=extract_export_phases(g, ϕ_base, fixed_buses), coord=coord)
 
-eq_rem = equivalent_parameters(remaining, fixed_buses, true)
+eq_rem = equivalent_parameters(remaining, "remaining", fixed_buses, true)
 model_sub_eq, r_sub_eq = secured_dc_OTS(sub,
     contingencies=collect(edge_labels(sub)),
     OTS_only=true,
     bus_orig=sub_bus_orig,
-    eq = eq_rem
+    equivalent = eq_rem
 );
 draw_TNR_result(sub, model_sub_eq, r_sub_eq, coord=coord)
 
-eq_outage = equivalent_parameters(sub, fixed_buses, false, outages=openings(model_sub_eq))
-eq_loop = equivalent_parameters(sub, fixed_buses, true)
+eq_outage = equivalent_parameters(sub, "sub_outage", fixed_buses, false, outages=openings(model_sub_eq))
+eq_loop = equivalent_parameters(sub, "sub looped", fixed_buses, true)
 
 
 m, r = secured_dc_OTS(remaining,
@@ -57,5 +57,5 @@ m, r = secured_dc_OTS(remaining,
     bus_orig="A",
     # fixed_buses=["A"],
     # fixed_phases=[0.],
-    eq=eq_outage)
+    equivalent=eq_outage)
 draw_TNR_result(remaining, m, r, coord=coord)

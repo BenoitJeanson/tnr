@@ -20,15 +20,15 @@ sub, remaining = subgraph(g, dsplit)
 buses_eq = collect(keys(dsplit))
 sub_bus_orig, remaining_bus_orig = "D", "A"
 
-eq_sub3 = equivalent_parameters(sub, buses_eq, true)
+eq_sub3 = equivalent_parameters(sub, "eq_sub3", buses_eq, true)
 
-model_remaining3, r_sub3 = my_OTS(remaining, remaining_bus_orig, eq=eq_sub3);
+model_remaining3, r_sub3 = my_OTS(remaining, remaining_bus_orig, equivalent=eq_sub3);
 draw_TNR_result(remaining, model_remaining3, r_sub3; coord=coord)
 res_remaining3 = openings(model_remaining3)
 
-eq_outage3 = equivalent_parameters(remaining, buses_eq, outages=res_remaining3, true)
+eq_outage3 = equivalent_parameters(remaining, "eq_outage", buses_eq, outages=res_remaining3, true)
 
-model_sub3, r_sub3 = my_OTS(sub, sub_bus_orig, eq=eq_outage3);
+model_sub3, r_sub3 = my_OTS(sub, sub_bus_orig, equivalent=eq_outage3);
 draw_TNR_result(sub, model_sub3, r_sub3, coord=coord)
 res_sub3 = openings(model_sub3)
 

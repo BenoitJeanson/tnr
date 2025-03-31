@@ -48,6 +48,7 @@ end
 
 function equivalent_parameters(
     orig::MetaGraph,
+    label::String,
     buses::AbstractArray{VLabel},
     include_branches_limites::Bool;
     outages::AbstractArray{ELabel}=ELabel[],)
@@ -80,8 +81,8 @@ function equivalent_parameters(
         push!(ccs, OTS_cc(cc_buses, l, g))
     end
     if include_branches_limites
-        return Equivalent(buses, injections.data, gen_slope, B, ccs, internal_branches, [flows[k] for k in eachindex(flows)], f_max, F)
+        return Equivalent(label, buses, injections.data, gen_slope, B, ccs, internal_branches, [flows[k] for k in eachindex(flows)], f_max, F)
     else
-        return Equivalent(buses, injections.data, gen_slope, B, ccs)
+        return Equivalent(label, buses, injections.data, gen_slope, B, ccs)
     end
 end

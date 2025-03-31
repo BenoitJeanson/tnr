@@ -10,6 +10,7 @@ function Base.show(io::IO, occ::OTS_cc)
     print("OTS_cc: Buses:", occ.buses, "  load:", occ.l, "  gen:", occ.g)
 end
 @proto mutable struct Equivalent
+    label::String
     buses::Vector{VLabel}
     p::Vector{Float64}
     gen_slope::Vector{Float64}
@@ -24,6 +25,7 @@ end
 end
 
 function Equivalent(
+    label::String,
     buses::Vector{VLabel},
     p::Vector{Float64},
     gen_slope::Vector{Float64},
@@ -40,7 +42,7 @@ function Equivalent(
     for (id, _cc) in enumerate(cc)
         foreach(bus_id -> cc_id[bus_id] = id, indexin(_cc.buses, buses))
     end
-    Equivalent(buses, p, gen_slope, B, cc, cc_id, allow_connector_opening, internal_branches, f, f_max, F)
+    Equivalent(label, buses, p, gen_slope, B, cc, cc_id, allow_connector_opening, internal_branches, f, f_max, F)
 end
 
 function Base.show(io::IO, e::Equivalent)
